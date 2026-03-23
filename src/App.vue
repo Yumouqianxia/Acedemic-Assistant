@@ -293,6 +293,25 @@ const handleLogin = async () => {
   }
 }
 
+const handleSsoLogin = async () => {
+  loggingIn.value = true
+  try {
+    const result = await window.electronAPI.moodleSsoLogin()
+    user.value = result
+    sessionStorage.setItem(SESSION_LOGIN_USER_KEY, JSON.stringify(result))
+    appStage.value = 'dashboard'
+    notifySuccess('SSO 登录成功，正在后台同步数据', '登录成功')
+    await loadProfiles()
+    await loadDashboard()
+    // Students session is already established via shared Office 365 partition
+    void syncAfterLogin(result.username)
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : 'SSO 登录失败', 'SSO 登录失败')
+  } finally {
+    loggingIn.value = false
+  }
+}
+
 const handleSsoNotAvailable = () => {
   notifyWarning('该功能暂未开放，请使用账号密码登录', '提示')
 }
@@ -534,14 +553,14 @@ watch(
 
         <!-- SSO buttons -->
         <div class="login-sso-row">
-          <button class="login-sso-btn" type="button" @click="handleSsoNotAvailable">
+          <button class="login-sso-btn" type="button" :disabled="loggingIn" @click="handleSsoLogin">
             <span class="ms-icon" aria-hidden="true">
               <span class="ms-sq ms-sq-r" />
               <span class="ms-sq ms-sq-g" />
               <span class="ms-sq ms-sq-b" />
               <span class="ms-sq ms-sq-y" />
             </span>
-            GTIIT SSO (Microsoft)
+            GT-IIT SSO (Microsoft)
           </button>
           <button class="login-sso-btn" type="button" @click="handleSsoNotAvailable">
             Alternative School Login

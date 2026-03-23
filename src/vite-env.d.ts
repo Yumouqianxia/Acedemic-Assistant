@@ -63,6 +63,12 @@ interface Window {
       password: string | null
     }>
     moodleLogout: (payload?: { username?: string }) => Promise<boolean>
+    moodleSsoLogin: () => Promise<{
+      username: string
+      fullName: string
+      siteName: string
+      userId: number
+    }>
     windowMinimize: () => Promise<void>
     windowMaximize: () => Promise<void>
     windowClose: () => Promise<void>

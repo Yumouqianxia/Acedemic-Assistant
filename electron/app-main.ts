@@ -84,6 +84,9 @@ function registerIpcHandlers() {
   ipcMain.handle('moodle:logout', (_event, payload?: { username?: string }) => {
     return ensureServices().moodleService.logout(payload)
   })
+  ipcMain.handle('moodle:sso-login', () => {
+    return ensureServices().moodleService.loginViaSso(() => win)
+  })
 
   ipcMain.handle('students:authenticate', () => ensureServices().studentsService.authenticate())
   ipcMain.handle('students:sync', () => ensureServices().studentsService.sync())

@@ -1,6 +1,6 @@
 import axios from 'axios'
 import Store from 'electron-store'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, session } from 'electron'
 import { DashboardDb } from '../dashboard-db'
 
 type MoodleProfile = {
@@ -277,6 +277,162 @@ export class MoodleService {
       username,
       password: this.db.getMoodleCredential(username),
     }
+  }
+
+  async loginViaSso(getParentWindow: () => BrowserWindow | null): Promise<{
+    username: string
+    fullName: string
+    siteName: string
+    userId: number
+  }> {
+    const MOODLE_LOGIN_URL = `${MOODLE_BASE}/login/index.php`
+    const passport = `${Date.now()}${Math.random().toString(36).slice(2)}`
+    const LAUNCH_URL = `${MOODLE_BASE}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=${passport}&urlscheme=moodlemobile`
+
+    const PARTITION = 'persist:students'
+    const ses = session.fromPartition(PARTITION)
+
+    const parent = getParentWindow() ?? undefined
+    const win = new BrowserWindow({
+      width: 1100,
+      height: 760,
+      title: 'GT-IIT Campus Dashboard — SSO 登录',
+      modal: Boolean(parent),
+      parent,
+      autoHideMenuBar: true,
+      show: true,
+      webPreferences: {
+        // Share the same partition as Students so Office 365 session is reused
+        partition: PARTITION,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+
+    return new Promise((resolve, reject) => {
+      let done = false
+      let moodleLoginDetected = false
+      let launchNavigated = false
+      let launchTimeoutId: ReturnType<typeof setTimeout> | null = null
+      let globalTimer: ReturnType<typeof setTimeout>
+
+      const unregisterProtocol = () => {
+        try { ses.protocol.unregisterProtocol('moodlemobile') } catch { /* already removed */ }
+      }
+
+      const finish = (value: { username: string; fullName: string; siteName: string; userId: number } | Error) => {
+        if (done) return
+        done = true
+        clearTimeout(globalTimer)
+        if (launchTimeoutId) clearTimeout(launchTimeoutId)
+        unregisterProtocol()
+        if (!win.isDestroyed()) win.close()
+        if (value instanceof Error) reject(value)
+        else resolve(value)
+      }
+
+      // Register moodlemobile:// at the session level so Electron intercepts it
+      // before Windows tries to open it with a system app.
+      ses.protocol.registerStringProtocol('moodlemobile', (request) => {
+        processTokenUrl(request.url)
+      })
+
+      globalTimer = setTimeout(
+        () => finish(new Error('SSO 登录超时（5 分钟），请重试')),
+        5 * 60 * 1000,
+      )
+
+      const processTokenUrl = (url: string) => {
+        if (done) return
+        try {
+          const raw = url.replace(/^moodlemobile:\/\/token=/, '')
+          if (!raw) throw new Error('token 参数为空')
+          const decoded = Buffer.from(raw, 'base64').toString('utf8')
+          // Moodle token format: "username:::wstoken" (:::privatetoken is optional)
+          const parts = decoded.split(':::')
+          if (parts.length < 2) throw new Error(`token 格式异常: ${decoded}`)
+          const [username, token] = parts
+          if (!username || !token) throw new Error('username 或 token 为空')
+
+          this.moodleSessions.set(username, { token, username })
+          this.activeUsername = username
+
+          this.callMoodleWs<MoodleSiteInfo>('core_webservice_get_site_info', token)
+            .then((siteInfo) => {
+              // Re-key the session with the canonical API username so that
+              // ensureSession() can find it when the frontend passes siteInfo.username
+              this.moodleSessions.delete(username)
+              this.moodleSessions.set(siteInfo.username, { token, username: siteInfo.username })
+              this.activeUsername = siteInfo.username
+              this.upsertProfile({
+                username: siteInfo.username,
+                fullName: siteInfo.fullname,
+                siteName: siteInfo.sitename,
+                hasRememberedPassword: false,
+              })
+              finish({
+                username: siteInfo.username,
+                fullName: siteInfo.fullname,
+                siteName: siteInfo.sitename,
+                userId: siteInfo.userid,
+              })
+            })
+            .catch((err) => finish(err instanceof Error ? err : new Error(String(err))))
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(`解析 SSO token 失败: ${err}`))
+        }
+      }
+
+      const navigateToLaunch = () => {
+        if (done || launchNavigated || win.isDestroyed()) return
+        launchNavigated = true
+        // If launch.php doesn't redirect within 30s, the plugin might not be enabled
+        launchTimeoutId = setTimeout(() => {
+          if (!done) {
+            finish(new Error(
+              'Moodle 未返回 SSO token（launch.php 无响应），可能该插件未启用。请改用账号密码登录。',
+            ))
+          }
+        }, 30 * 1000)
+        win.webContents.loadURL(LAUNCH_URL).catch(() => {})
+      }
+
+      // Primary: will-navigate fires when the page tries to navigate to moodlemobile://
+      win.webContents.on('will-navigate', (_evt, url) => {
+        if (url.startsWith('moodlemobile://')) processTokenUrl(url)
+      })
+
+      // Backup A: did-fail-load fires after Electron rejects the unknown scheme
+      win.webContents.on('did-fail-load', (_evt, _code, _desc, validatedURL, isMainFrame) => {
+        if (!isMainFrame) return
+        if (validatedURL?.startsWith('moodlemobile://')) processTokenUrl(validatedURL)
+      })
+
+      // Detect successful Moodle login by watching main-frame navigations
+      win.webContents.on('did-navigate', (_evt, url) => {
+        if (done) return
+        if (url.startsWith('moodlemobile://')) { processTokenUrl(url); return }
+
+        const onMoodle = url.includes('moodle.gtiit.edu.cn/moodle')
+        const onLoginPage = url.includes('/login/')
+        const onMSAuth = url.includes('microsoftonline.com')
+          || url.includes('login.live.com')
+          || url.includes('login.microsoft.com')
+
+        if (onMoodle && !onLoginPage && !onMSAuth && !moodleLoginDetected) {
+          moodleLoginDetected = true
+          // Wait for the page to settle, then trigger token extraction
+          setTimeout(navigateToLaunch, 1500)
+        }
+      })
+
+      win.on('closed', () => { if (!done) finish(new Error('SSO 窗口已关闭')) })
+
+      win.loadURL(MOODLE_LOGIN_URL).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!msg.includes('ERR_ABORTED')) finish(new Error(msg))
+      })
+    })
   }
 
   logout(payload?: { username?: string }) {

@@ -85,6 +85,14 @@ const electronAPI = {
   moodleLogout(payload?: { username?: string }) {
     return ipcRenderer.invoke('moodle:logout', payload) as Promise<boolean>
   },
+  moodleSsoLogin() {
+    return ipcRenderer.invoke('moodle:sso-login') as Promise<{
+      username: string
+      fullName: string
+      siteName: string
+      userId: number
+    }>
+  },
   studentsAuthenticate() {
     return ipcRenderer.invoke('students:authenticate') as Promise<{
       authenticated: boolean

@@ -1,0 +1,67 @@
+---
+description: 
+alwaysApply: true
+---
+
+项目概述：校园双系统聚合面板 (Campus Dashboard)
+目标： 开发一个本地桌面端应用，将公网的 Moodle 学习系统（课程、课件）和内网的 Students 成绩系统整合在一个统一的面板中展示。
+核心痛点： 跨网络环境获取数据（公网 API + 内网 SSO 跳转拦截）。
+
+ 开发规范 (Development Standards)
+1. **包管理器 (Package Manager)：** 本项目全局强制使用 `pnpm`。在任何情况下（初始化、安装依赖、运行脚本等），严禁使用 `npm` 或 `yarn`。
+2. **代码规范：** 严格使用 TypeScript 进行类型约束，非极端情况避免使用 `any`。
+
+🛠 技术栈
+前端渲染 (Renderer)： Vue 3 + TypeScript + Vite
+
+桌面端框架 (Main)： Electron (利用 Node.js 环境处理跨域和自动化)
+
+UI 组件库： Element Plus 或 Naive UI（可根据个人喜好让 Cursor 调整）
+
+网络请求： Axios
+
+🏗 核心架构设计
+应用分为完全解耦的两层，通过 Electron 的 ipcMain 和 ipcRenderer 进行通信：
+
+1. 后端数据层（Electron 主进程 / Node.js）
+这是整个应用的核心驱动力，负责突破网络和认证限制。
+
+Moodle 模块（公网）： * 策略： 原生 REST API 调用。
+
+实现： 已经手动获取了长期有效的 wstoken。主进程直接使用 axios 携带 Token 请求 moodle.gtiit.edu.cn/moodle/webservice/rest/server.php，调用相关 wsfunction（如获取用户信息、课程列表）并返回纯净的 JSON 数据。
+
+Students 模块（内网）： * 策略： 隐式浏览器自动化 (RPA)。
+
+实现： 依赖全局的 Office 365 登录态。在主进程中创建一个隐藏的 BrowserWindow 访问内网地址。通过 webContents.executeJavaScript 注入脚本，自动点击内网系统特有的 "Continue" 二次确认弹窗，等待页面加载完成后抓取成绩 DOM 或拦截接口返回的 JSON。
+
+2. 前端展示层（Vue3 渲染进程）
+只负责 UI 渲染。向主进程发送获取数据的 IPC 指令，接收到整理好的 JSON 数据后，渲染课程表、课件列表和成绩看板。
+
+🚀 开发分步计划 (Cursor 执行指南)
+Phase 1: 基础设施搭建
+
+使用 Vite 初始化 Vue 3 + TypeScript + Electron 的基础工程目录。
+
+配置好主进程 (Main) 和渲染进程 (Renderer) 的热更新环境。
+
+Phase 2: Moodle API 接入 (最易出成果)
+
+在主进程中封装 Moodle API 的基础 Axios 请求实例。
+
+编写获取个人信息 (core_webservice_get_site_info) 和课程列表的逻辑。
+
+打通 IPC 通信：前端点击“同步 Moodle”，主进程拉取数据并返回给前端展示。
+
+Phase 3: 内网 Students 自动化攻坚
+
+在主进程编写隐式 BrowserWindow 的控制逻辑。
+
+实现注入 JS 代码自动查找并点击 "Continue" 按钮的功能。
+
+提取成绩数据并清洗为 JSON 格式，通过 IPC 传给前端。
+
+Phase 4: UI 美化与数据持久化
+
+设计直观的数据 Dashboard。
+
+（可选）引入轻量级本地存储（如 electron-store 或低配 SQLite），缓存历史成绩和课件信息，实现离线/未挂 VPN 时也能查看。

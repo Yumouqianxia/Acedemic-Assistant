@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { DashboardDb } from './dashboard-db'
@@ -32,7 +32,16 @@ function ensureServices() {
 }
 
 function createWindow() {
+  // Remove the native menu bar entirely
+  Menu.setApplicationMenu(null)
+
   win = new BrowserWindow({
+    title: 'GTIIT Campus Dashboard',
+    width: 1080,
+    height: 780,
+    minWidth: 860,
+    minHeight: 600,
+    frame: false,
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -89,11 +98,38 @@ function registerIpcHandlers() {
       | Awaited<ReturnType<StudentsService['sync']>>
       | null = null
     let studentsError: string | null = null
-    try {
+
+    const tryStudentsSync = async () => {
       students = await studentsService.sync()
-    } catch (error) {
-      studentsError = error instanceof Error ? error.message : String(error)
     }
+
+    try {
+      await tryStudentsSync()
+    } catch (firstError) {
+      const firstMsg = firstError instanceof Error ? firstError.message : String(firstError)
+      const isNotLoggedIn = firstMsg.includes('当前未登录') || firstMsg.includes('未登录')
+
+      if (isNotLoggedIn) {
+        // Auto-trigger the authentication window, then retry sync
+        try {
+          const authResult = await studentsService.authenticate()
+          if (authResult.authenticated) {
+            try {
+              await tryStudentsSync()
+            } catch (retryError) {
+              studentsError = retryError instanceof Error ? retryError.message : String(retryError)
+            }
+          } else {
+            studentsError = `Students 认证未完成（${authResult.reason ?? 'cancelled'}），数据未同步`
+          }
+        } catch (authError) {
+          studentsError = authError instanceof Error ? authError.message : String(authError)
+        }
+      } else {
+        studentsError = firstMsg
+      }
+    }
+
     const result = {
       trigger,
       at: new Date().toISOString(),
@@ -106,6 +142,15 @@ function registerIpcHandlers() {
     }
     return result
   })
+
+  // Window controls
+  ipcMain.handle('window:minimize', () => win?.minimize())
+  ipcMain.handle('window:maximize', () => {
+    if (win?.isMaximized()) win?.unmaximize()
+    else win?.maximize()
+  })
+  ipcMain.handle('window:close', () => win?.close())
+  ipcMain.handle('window:is-maximized', () => win?.isMaximized() ?? false)
 }
 
 async function runAutoSyncIfDue() {

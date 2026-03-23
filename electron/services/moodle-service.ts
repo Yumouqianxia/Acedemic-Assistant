@@ -1,5 +1,6 @@
 import axios from 'axios'
 import Store from 'electron-store'
+import { BrowserWindow } from 'electron'
 import { DashboardDb } from '../dashboard-db'
 
 type MoodleProfile = {

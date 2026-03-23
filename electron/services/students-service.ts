@@ -562,6 +562,9 @@ export class StudentsService {
           exams: examDelta,
         },
       })
+      if (data.profile) {
+        this.db.setMeta('students:profile', data.profile)
+      }
 
       return {
         ...data,

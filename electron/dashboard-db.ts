@@ -427,6 +427,15 @@ export class DashboardDb {
       lastMoodleSyncAt: this.getMeta('sync:moodle:last'),
       lastStudentsSyncAt: this.getMeta('sync:students:last'),
       lastAutoSync: this.getMeta('sync:auto:last'),
+      studentsProfile: this.getMeta('students:profile') as {
+        studentId: string
+        programName: string
+        chineseName: string
+        pinyinName: string
+        cohort: string
+        gpa: string
+        accumulatedCreditPoints: string
+      } | null,
     }
   }
 

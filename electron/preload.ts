@@ -177,6 +177,18 @@ const electronAPI = {
       } | null
     }>
   },
+  windowMinimize() {
+    return ipcRenderer.invoke('window:minimize') as Promise<void>
+  },
+  windowMaximize() {
+    return ipcRenderer.invoke('window:maximize') as Promise<void>
+  },
+  windowClose() {
+    return ipcRenderer.invoke('window:close') as Promise<void>
+  },
+  windowIsMaximized() {
+    return ipcRenderer.invoke('window:is-maximized') as Promise<boolean>
+  },
   dashboardSyncAll(payload?: { username?: string; trigger?: 'manual' | 'login' | 'auto' }) {
     return ipcRenderer.invoke('dashboard:sync-all', payload) as Promise<{
       trigger: 'manual' | 'login' | 'auto'

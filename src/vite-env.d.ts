@@ -63,6 +63,10 @@ interface Window {
       password: string | null
     }>
     moodleLogout: (payload?: { username?: string }) => Promise<boolean>
+    windowMinimize: () => Promise<void>
+    windowMaximize: () => Promise<void>
+    windowClose: () => Promise<void>
+    windowIsMaximized: () => Promise<boolean>
     studentsAuthenticate: () => Promise<{
       authenticated: boolean
       reason?: string
@@ -145,6 +149,15 @@ interface Window {
         at: string
         studentsError?: string | null
         error?: string
+      } | null
+      studentsProfile: {
+        studentId: string
+        programName: string
+        chineseName: string
+        pinyinName: string
+        cohort: string
+        gpa: string
+        accumulatedCreditPoints: string
       } | null
     }>
     dashboardSyncAll: (payload?: { username?: string; trigger?: 'manual' | 'login' | 'auto' }) => Promise<{

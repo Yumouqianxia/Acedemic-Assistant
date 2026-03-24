@@ -253,6 +253,20 @@ const formatCourseDelta = (delta?: { inserted: number; updated: number } | null)
   return `新增 ${delta.inserted}，更新 ${delta.updated}`
 }
 
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 const notifySuccess = (message: string, title = '成功') => {
   ElMessage({
     message: `${title}：${message}`,
@@ -575,22 +589,40 @@ const handleSelectFiles = async () => {
       error: null,
     }
     selectedFiles.value.push(file)
-    void uploadSelectedFile(file)
+    const fileIndex = selectedFiles.value.length - 1
+    void uploadSelectedFile(fileIndex)
   }
 }
 
-const uploadSelectedFile = async (file: SelectedFile) => {
-  file.uploading = true
-  file.error = null
+const updateSelectedFileAt = (index: number, patch: Partial<SelectedFile>) => {
+  const current = selectedFiles.value[index]
+  if (!current) return
+  selectedFiles.value[index] = { ...current, ...patch }
+}
+
+const uploadSelectedFile = async (index: number) => {
+  const current = selectedFiles.value[index]
+  if (!current) return
+
+  updateSelectedFileAt(index, { uploading: true, error: null })
   try {
-    const result = await window.electronAPI.moodleAssignmentUploadFile({ filePath: file.path })
-    file.itemid = result.itemid
-    file.name = result.filename || file.name
-    file.size = result.fileSize
+    const result = await withTimeout(
+      window.electronAPI.moodleAssignmentUploadFile({
+        filePath: current.path,
+        username: user.value?.username,
+      }),
+      50_000,
+      '上传超时（50 秒），请检查网络后重试',
+    )
+    updateSelectedFileAt(index, {
+      itemid: result.itemid,
+      name: result.filename || current.name,
+      size: result.fileSize,
+    })
   } catch (error) {
-    file.error = error instanceof Error ? error.message : '上传失败'
+    updateSelectedFileAt(index, { error: error instanceof Error ? error.message : '上传失败' })
   } finally {
-    file.uploading = false
+    updateSelectedFileAt(index, { uploading: false })
   }
 }
 

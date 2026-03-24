@@ -745,14 +745,50 @@ export class MoodleService {
       enc(`${CRLF}--${boundary}--${CRLF}`),
     ])
 
-    const response = await net.fetch(`${MOODLE_BASE}/webservice/upload.php`, {
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-      body: body,
+    const uploadUrl = `${MOODLE_BASE}/webservice/upload.php`
+    const start = Date.now()
+    const timeoutMs = 45_000
+    const abortController = new AbortController()
+    const timeoutId = setTimeout(() => abortController.abort(), timeoutMs)
+
+    console.info('[moodle:upload] start', {
+      username: sess.username,
+      filename,
+      fileSize,
+      mimeType,
+      timeoutMs,
     })
+
+    let response: Awaited<ReturnType<typeof net.fetch>>
+    try {
+      response = await net.fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+        signal: abortController.signal,
+      })
+    } catch (error) {
+      const elapsedMs = Date.now() - start
+      if ((error as Error).name === 'AbortError') {
+        console.error('[moodle:upload] timeout', { filename, elapsedMs, timeoutMs })
+        throw new Error(`文件上传超时（>${timeoutMs / 1000}s），请检查网络或稍后重试`)
+      }
+      console.error('[moodle:upload] request failed', { filename, elapsedMs, error })
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => '')
+      console.error('[moodle:upload] http error', {
+        filename,
+        status: response.status,
+        elapsedMs: Date.now() - start,
+        response: text.slice(0, 300),
+      })
       throw new Error(`文件上传失败 (HTTP ${response.status}): ${text.slice(0, 300)}`)
     }
 
@@ -764,6 +800,11 @@ export class MoodleService {
     if (data[0]?.itemid == null) {
       throw new Error(`文件上传返回格式异常: ${JSON.stringify(data)}`)
     }
+    console.info('[moodle:upload] success', {
+      filename,
+      elapsedMs: Date.now() - start,
+      itemid: data[0].itemid,
+    })
     return { itemid: data[0].itemid, filename: data[0].filename ?? filename, fileSize }
   }
 

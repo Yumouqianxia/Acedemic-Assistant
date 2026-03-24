@@ -12,6 +12,11 @@ import {
   Message,
   Lock,
   ArrowRight,
+  Clock,
+  Upload,
+  Delete,
+  Back,
+  Document,
 } from '@element-plus/icons-vue'
 
 type MoodleProfile = {
@@ -63,7 +68,49 @@ type MoodleSection = {
   }>
 }
 
-const appStage = ref<'login' | 'dashboard'>('login')
+type TimelineEvent = {
+  id: number
+  name: string
+  description: string
+  courseid: number
+  coursename: string
+  timestart: number
+  timesort: number
+  modulename: string
+  /** cmid from ?id=CMID in actionUrl — reliable identifier */
+  cmid: number
+  actionUrl: string
+}
+
+type AssignmentDetail = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  duedate: number
+  allowsubmissionsfromdate: number
+  fileSubmissionEnabled: boolean
+  maxFileSubmissions: number
+  allowedFileTypes: string
+}
+
+type SubmissionStatus = {
+  status: string
+  canSubmit: boolean
+  canEdit: boolean
+  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+}
+
+type SelectedFile = {
+  path: string
+  name: string
+  size: number
+  itemid: number | null
+  uploading: boolean
+  error: string | null
+}
+
+const appStage = ref<'login' | 'dashboard' | 'submission'>('login')
 const loginForm = reactive({ username: '', password: '' })
 const rememberPassword = ref(false)
 const profiles = ref<MoodleProfile[]>([])
@@ -103,7 +150,20 @@ const selectedCourse = ref<UnifiedCourse | null>(null)
 const selectedSections = ref<MoodleSection[]>([])
 const loadingSections = ref(false)
 
-// ── Computed ─────────────────────────────────────────────────────────────────
+// ── Timeline state ────────────────────────────────────────────────────────
+const timelineEvents = ref<TimelineEvent[]>([])
+const timelineLoading = ref(false)
+const timelineLoaded = ref(false)
+
+// ── Submission page state ─────────────────────────────────────────────────
+const submissionEvent = ref<TimelineEvent | null>(null)
+const submissionAssignment = ref<AssignmentDetail | null>(null)
+const submissionStatus = ref<SubmissionStatus | null>(null)
+const submissionLoading = ref(false)
+const selectedFiles = ref<SelectedFile[]>([])
+const submitting = ref(false)
+
+// ── Computed ──────────────────────────────────────────────────────────────────
 
 const userInitial = computed(() => {
   const name = user.value?.fullName ?? ''
@@ -139,6 +199,40 @@ const selectedCourseExams = computed(() => {
   if (!code) return []
   return dashboard.value.exams.filter((exam) => exam.courseCode === code)
 })
+
+const timelineGrouped = computed(() => {
+  const groups: { dateLabel: string; dateKey: string; events: TimelineEvent[] }[] = []
+  const seen = new Map<string, TimelineEvent[]>()
+  for (const ev of timelineEvents.value) {
+    const d = new Date(ev.timesort * 1000)
+    const dateKey = d.toISOString().slice(0, 10)
+    const dateLabel = d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    if (!seen.has(dateKey)) {
+      seen.set(dateKey, [])
+      groups.push({ dateLabel, dateKey, events: seen.get(dateKey)! })
+    }
+    seen.get(dateKey)!.push(ev)
+  }
+  return groups
+})
+
+const submissionDueDate = computed(() => {
+  const ts = submissionAssignment.value?.duedate
+  if (!ts) return null
+  return new Date(ts * 1000)
+})
+
+const submissionStatusLabel = computed(() => {
+  const s = submissionStatus.value?.status
+  if (!s || s === 'new') return { text: 'Not Submitted', color: '#f56c6c' }
+  if (s === 'draft') return { text: 'Draft Saved', color: '#e6a23c' }
+  if (s === 'submitted') return { text: 'Submitted', color: '#67c23a' }
+  return { text: s, color: '#909399' }
+})
+
+const totalSelectedSize = computed(() =>
+  selectedFiles.value.reduce((sum, f) => sum + f.size, 0),
+)
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
@@ -262,6 +356,7 @@ const syncAfterLogin = async (username: string) => {
     } else {
       notifyWarning(`登录后仅完成 Moodle 同步：${moodleText}，${studentsText}`, '同步部分完成')
     }
+    void loadTimeline()
   } catch (error) {
     notifyWarning(error instanceof Error ? `登录后自动同步失败：${error.message}` : '登录后自动同步失败', '同步失败')
   } finally {
@@ -323,6 +418,12 @@ const handleLogout = async () => {
   selectedCourse.value = null
   selectedSections.value = []
   showCourseDetail.value = false
+  timelineEvents.value = []
+  timelineLoaded.value = false
+  submissionEvent.value = null
+  submissionAssignment.value = null
+  submissionStatus.value = null
+  selectedFiles.value = []
   dashboard.value = {
     courses: [],
     exams: [],
@@ -352,6 +453,7 @@ const syncAll = async () => {
       ? `Students(课程${formatCourseDelta(result.students.delta.courses)}；考试 新增 ${result.students.delta.exams.inserted}，更新 ${result.students.delta.exams.updated}，删除 ${result.students.delta.exams.deleted})`
       : `Students(跳过：${result.studentsError || '未认证'})`
     notifySuccess(`同步完成：${moodleText}，${studentsText}`, '同步完成')
+    void loadTimeline()
   } catch (error) {
     notifyError(error instanceof Error ? error.message : '同步全部失败', '同步失败')
   } finally {
@@ -375,6 +477,169 @@ const handleSelectCourse = async (course: UnifiedCourse) => {
     })
   } finally {
     loadingSections.value = false
+  }
+}
+
+// ── Timeline ──────────────────────────────────────────────────────────────────
+
+const loadTimeline = async () => {
+  if (timelineLoading.value) return
+  timelineLoading.value = true
+  try {
+    timelineEvents.value = await window.electronAPI.moodleTimeline({ daysAhead: 30 })
+    timelineLoaded.value = true
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '获取 Timeline 失败', 'Timeline')
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+const formatEventTime = (ts: number) => {
+  const d = new Date(ts * 1000)
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+}
+
+const shortCourseName = (name: string) => {
+  const m = name.match(/^\d+\s*[-–]\s*(.+?)(?:\s*-\s*(?:Spring|Summer|Fall|Winter)\s*\d{4})?$/i)
+  return m ? m[1].trim() : name
+}
+
+const handleOpenSubmission = async (event: TimelineEvent) => {
+  if (event.modulename !== 'assign') {
+    notifyWarning('仅支持 Assignment 类型的提交，其他类型请在 Moodle 中操作', '暂不支持')
+    return
+  }
+  if (!event.cmid) {
+    notifyWarning('无法获取作业 ID，请在 Moodle 中操作', '数据异常')
+    return
+  }
+  submissionEvent.value = event
+  submissionAssignment.value = null
+  submissionStatus.value = null
+  selectedFiles.value = []
+  appStage.value = 'submission'
+  submissionLoading.value = true
+  try {
+    // Single combined call: resolves cmid → assignId, then fetches detail + status in parallel
+    const { detail, status } = await window.electronAPI.moodleAssignmentDetailWithStatus({
+      cmid: event.cmid,
+      courseId: event.courseid,
+    })
+    submissionAssignment.value = detail
+    submissionStatus.value = status
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '加载作业详情失败', '加载失败')
+  } finally {
+    submissionLoading.value = false
+  }
+}
+
+const handleBackToDashboard = () => {
+  appStage.value = 'dashboard'
+  submissionEvent.value = null
+  submissionAssignment.value = null
+  submissionStatus.value = null
+  selectedFiles.value = []
+}
+
+// ── Submission file management ────────────────────────────────────────────────
+
+const handleSelectFiles = async () => {
+  const result = await window.electronAPI.dialogOpenFile({
+    title: 'Select files to submit',
+    filters: [
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths.length) return
+
+  const maxFiles = submissionAssignment.value?.maxFileSubmissions ?? 1
+  const currentCount = selectedFiles.value.length
+
+  for (const filePath of result.filePaths) {
+    if (currentCount + selectedFiles.value.length >= maxFiles) {
+      notifyWarning(`最多允许上传 ${maxFiles} 个文件`, '文件数量限制')
+      break
+    }
+    const name = filePath.split(/[\\/]/).pop() ?? filePath
+    const alreadyAdded = selectedFiles.value.some((f) => f.path === filePath)
+    if (alreadyAdded) continue
+
+    const file: SelectedFile = {
+      path: filePath,
+      name,
+      size: 0,
+      itemid: null,
+      uploading: false,
+      error: null,
+    }
+    selectedFiles.value.push(file)
+    void uploadSelectedFile(file)
+  }
+}
+
+const uploadSelectedFile = async (file: SelectedFile) => {
+  file.uploading = true
+  file.error = null
+  try {
+    const result = await window.electronAPI.moodleAssignmentUploadFile({ filePath: file.path })
+    file.itemid = result.itemid
+    file.name = result.filename || file.name
+    file.size = result.fileSize
+  } catch (error) {
+    file.error = error instanceof Error ? error.message : '上传失败'
+  } finally {
+    file.uploading = false
+  }
+}
+
+const handleRemoveFile = (index: number) => {
+  selectedFiles.value.splice(index, 1)
+}
+
+const handleSubmit = async () => {
+  if (!submissionAssignment.value || !submissionEvent.value) return
+
+  const pendingUploads = selectedFiles.value.filter((f) => f.uploading)
+  if (pendingUploads.length) {
+    notifyWarning('请等待文件上传完成后再提交', '上传中')
+    return
+  }
+  const failedUploads = selectedFiles.value.filter((f) => f.error)
+  if (failedUploads.length) {
+    notifyError('有文件上传失败，请重新选择后再提交', '提交失败')
+    return
+  }
+  const uploadedFiles = selectedFiles.value.filter((f) => f.itemid != null)
+  if (!uploadedFiles.length && !submissionStatus.value?.submittedFiles.length) {
+    notifyWarning('请至少选择一个文件', '未选择文件')
+    return
+  }
+
+  const draftItemId = uploadedFiles[0]?.itemid
+  if (draftItemId == null) {
+    notifyWarning('文件尚未完成上传', '等待中')
+    return
+  }
+
+  submitting.value = true
+  try {
+    await window.electronAPI.moodleAssignmentSaveSubmission({
+      assignId: submissionAssignment.value.id,
+      draftItemId,
+    })
+    notifySuccess('作业提交成功！', '提交成功')
+    const refreshed = await window.electronAPI.moodleAssignmentDetailWithStatus({
+      cmid: submissionEvent.value!.cmid,
+      courseId: submissionEvent.value!.courseid,
+    })
+    submissionStatus.value = refreshed.status
+    selectedFiles.value = []
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '提交失败', '提交失败')
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -411,6 +676,9 @@ onMounted(async () => {
     await loadDashboard()
   } catch {
     // ignore on first load
+  }
+  if (appStage.value === 'dashboard') {
+    void loadTimeline()
   }
 })
 
@@ -571,7 +839,7 @@ watch(
   </div>
 
   <!-- ══════════════ DASHBOARD PAGE ══════════════ -->
-  <div v-else class="app-layout">
+  <div v-else-if="appStage === 'dashboard'" class="app-layout">
 
     <!-- ── Full-width header ── -->
     <div class="app-header">
@@ -611,6 +879,70 @@ watch(
           <span class="stat-big">{{ currentSemesterInfo?.credits ?? '-' }}</span>
         </div>
         <div class="stat-sub">{{ currentSemesterInfo?.label ?? '-' }}</div>
+      </div>
+    </div>
+
+    <!-- ── Timeline panel ── -->
+    <div class="timeline-panel">
+      <div class="timeline-header">
+        <div class="timeline-title">
+          <el-icon class="timeline-title-icon"><Clock /></el-icon>
+          Upcoming Deadlines
+        </div>
+        <el-button
+          class="btn-refresh-timeline"
+          :loading="timelineLoading"
+          size="small"
+          @click="loadTimeline"
+        >
+          <el-icon><Refresh /></el-icon>
+          Refresh
+        </el-button>
+      </div>
+
+      <!-- Loading skeleton -->
+      <div v-if="timelineLoading && !timelineLoaded" class="timeline-loading">
+        <el-icon class="is-loading"><Refresh /></el-icon> Loading timeline...
+      </div>
+
+      <!-- Empty state -->
+      <div v-else-if="timelineLoaded && !timelineEvents.length" class="timeline-empty">
+        No upcoming deadlines in the next 30 days
+      </div>
+
+      <!-- Not yet loaded -->
+      <div v-else-if="!timelineLoaded && !timelineLoading" class="timeline-empty">
+        Sync Moodle to load upcoming deadlines
+      </div>
+
+      <!-- Groups -->
+      <div v-else class="timeline-groups">
+        <div v-for="group in timelineGrouped" :key="group.dateKey" class="timeline-group">
+          <div class="timeline-date-label">{{ group.dateLabel }}</div>
+          <div
+            v-for="ev in group.events"
+            :key="ev.id"
+            class="timeline-event"
+            :class="{ 'timeline-event--clickable': ev.modulename === 'assign' }"
+            @click="handleOpenSubmission(ev)"
+          >
+            <div class="tl-left">
+              <el-icon class="tl-mod-icon" :class="`tl-mod--${ev.modulename}`">
+                <DocumentCopy v-if="ev.modulename === 'assign'" />
+                <Reading v-else-if="ev.modulename === 'quiz'" />
+                <Calendar v-else />
+              </el-icon>
+              <div class="tl-info">
+                <div class="tl-name">{{ ev.name }}</div>
+                <div class="tl-course">{{ shortCourseName(ev.coursename) }}</div>
+              </div>
+            </div>
+            <div class="tl-right">
+              <span class="tl-time">{{ formatEventTime(ev.timesort) }}</span>
+              <el-icon v-if="ev.modulename === 'assign'" class="tl-arrow"><ArrowRight /></el-icon>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -772,6 +1104,144 @@ watch(
       </div>
     </el-dialog>
 
+  </div>
+
+  <!-- ══════════════ SUBMISSION PAGE ══════════════ -->
+  <div v-if="appStage === 'submission'" class="submission-page">
+    <!-- Back bar -->
+    <div class="sub-topbar">
+      <button class="sub-back-btn" @click="handleBackToDashboard">
+        <el-icon><Back /></el-icon>
+        Back to Dashboard
+      </button>
+      <span class="sub-breadcrumb">
+        {{ shortCourseName(submissionEvent?.coursename ?? '') }}
+      </span>
+    </div>
+
+    <!-- Loading -->
+    <div v-if="submissionLoading" class="sub-loading">
+      <el-icon class="is-loading"><Refresh /></el-icon>
+      Loading assignment details...
+    </div>
+
+    <!-- Content -->
+    <div v-else-if="submissionAssignment" class="sub-content">
+      <!-- Assignment header -->
+      <div class="sub-header">
+        <div class="sub-title-row">
+          <h1 class="sub-title">{{ submissionAssignment.name }}</h1>
+          <div
+            class="sub-status-badge"
+            :style="{ background: submissionStatusLabel.color + '22', color: submissionStatusLabel.color, borderColor: submissionStatusLabel.color + '55' }"
+          >
+            {{ submissionStatusLabel.text }}
+          </div>
+        </div>
+        <div class="sub-meta-row">
+          <span class="sub-meta-item">
+            <el-icon><Clock /></el-icon>
+            Due:&nbsp;
+            <strong>
+              {{ submissionDueDate
+                ? submissionDueDate.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : 'No due date' }}
+            </strong>
+          </span>
+          <span class="sub-meta-item">
+            <el-icon><Document /></el-icon>
+            Max {{ submissionAssignment.maxFileSubmissions }} file{{ submissionAssignment.maxFileSubmissions !== 1 ? 's' : '' }}
+          </span>
+          <span class="sub-meta-item sub-meta-types">
+            {{ submissionAssignment.allowedFileTypes || 'All file types accepted' }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Assignment description -->
+      <div v-if="submissionAssignment.intro" class="sub-section">
+        <div class="sub-section-title">Assignment Description</div>
+        <div class="sub-intro" v-html="submissionAssignment.intro" />
+      </div>
+
+      <!-- Previously submitted files -->
+      <div v-if="submissionStatus?.submittedFiles.length" class="sub-section">
+        <div class="sub-section-title">
+          <el-icon><Document /></el-icon>
+          Currently Submitted Files
+        </div>
+        <div class="sub-file-list">
+          <div v-for="file in submissionStatus.submittedFiles" :key="file.fileurl" class="sub-submitted-file">
+            <el-icon class="sub-file-icon"><Document /></el-icon>
+            <span class="sub-file-name">{{ file.filename }}</span>
+            <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- File upload section -->
+      <div class="sub-section">
+        <div class="sub-section-title">
+          <el-icon><Upload /></el-icon>
+          Upload New Submission
+        </div>
+
+        <!-- Drop zone / add button -->
+        <div class="sub-dropzone" @click="handleSelectFiles">
+          <el-icon class="sub-drop-icon"><Upload /></el-icon>
+          <div class="sub-drop-text">Click to select files</div>
+          <div class="sub-drop-hint">
+            Max {{ submissionAssignment.maxFileSubmissions }} file{{ submissionAssignment.maxFileSubmissions !== 1 ? 's' : '' }}
+            · {{ submissionAssignment.allowedFileTypes || 'All file types' }}
+          </div>
+        </div>
+
+        <!-- Selected file list -->
+        <div v-if="selectedFiles.length" class="sub-selected-files">
+          <div v-for="(file, idx) in selectedFiles" :key="file.path" class="sub-sel-file">
+            <div class="sub-sel-left">
+              <el-icon class="sub-sel-icon" :class="{ 'is-loading': file.uploading, 'sub-sel-error': file.error }">
+                <Refresh v-if="file.uploading" />
+                <Document v-else />
+              </el-icon>
+              <div class="sub-sel-info">
+                <div class="sub-sel-name">{{ file.name }}</div>
+                <div v-if="file.uploading" class="sub-sel-status sub-sel-uploading">Uploading...</div>
+                <div v-else-if="file.error" class="sub-sel-status sub-sel-err">{{ file.error }}</div>
+                <div v-else class="sub-sel-status sub-sel-ok">Ready</div>
+              </div>
+            </div>
+            <button class="sub-sel-remove" @click="handleRemoveFile(idx)">
+              <el-icon><Delete /></el-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Summary row -->
+        <div v-if="selectedFiles.length" class="sub-summary">
+          <span>{{ selectedFiles.length }} file{{ selectedFiles.length !== 1 ? 's' : '' }} selected</span>
+          <span v-if="totalSelectedSize">· {{ formatBytes(totalSelectedSize) }} total</span>
+        </div>
+      </div>
+
+      <!-- Submit button -->
+      <div class="sub-actions">
+        <el-button
+          class="sub-submit-btn"
+          :loading="submitting"
+          :disabled="!selectedFiles.length"
+          @click="handleSubmit"
+        >
+          <el-icon v-if="!submitting"><ArrowRight /></el-icon>
+          {{ submissionStatus?.status === 'submitted' ? 'Resubmit Assignment' : 'Submit Assignment' }}
+        </el-button>
+      </div>
+    </div>
+
+    <!-- Error / no detail -->
+    <div v-else class="sub-loading">
+      Failed to load assignment. Please go back and try again.
+    </div>
   </div>
 
 </div>
@@ -1593,5 +2063,506 @@ watch(
 .muted {
   color: #9aabb8;
   font-size: 12.5px;
+}
+
+/* ── Timeline panel ───────────────────────────────────────────────────── */
+.timeline-panel {
+  margin: 6px 28px 0;
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #e8ecf0;
+  padding: 18px 22px 14px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.timeline-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1b2a3b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.timeline-title-icon {
+  font-size: 15px;
+  color: #e05c2a;
+}
+
+.btn-refresh-timeline {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: #6e7f8d;
+  border-color: #dde2e8;
+}
+
+.timeline-loading,
+.timeline-empty {
+  font-size: 13px;
+  color: #9aabb8;
+  padding: 10px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timeline-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeline-date-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e05c2a;
+  letter-spacing: 0.3px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #f5e8e2;
+  margin-bottom: 4px;
+}
+
+.timeline-event {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #f0f2f5;
+  background: #fafbfc;
+  transition: box-shadow 0.15s, border-color 0.15s, background 0.15s;
+  gap: 12px;
+}
+
+.timeline-event--clickable {
+  cursor: pointer;
+}
+
+.timeline-event--clickable:hover {
+  border-color: #d0d9e6;
+  background: #f3f6fb;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.tl-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tl-mod-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.tl-mod--assign { color: #e05c2a; }
+.tl-mod--quiz { color: #9b59b6; }
+.tl-mod--forum,
+.tl-mod--resource { color: #3a7bd5; }
+
+.tl-info {
+  min-width: 0;
+}
+
+.tl-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1b2a3b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+.tl-course {
+  font-size: 11.5px;
+  color: #7a8a9a;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+.tl-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tl-time {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #5a6a7a;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-arrow {
+  font-size: 13px;
+  color: #b0bac8;
+}
+
+/* ── Submission page ──────────────────────────────────────────────────── */
+.submission-page {
+  position: absolute;
+  inset: 40px 0 0;
+  background: #f0f2f5;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.sub-topbar {
+  height: 52px;
+  background: #1b2a3b;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.sub-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.sub-back-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sub-breadcrumb {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #7a8a9a;
+}
+
+.sub-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 28px 60px 48px;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.sub-header {
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #e8ecf0;
+  padding: 26px 30px 22px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.sub-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.sub-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1b2a3b;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.sub-status-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.sub-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #5a6a7a;
+}
+
+.sub-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sub-meta-types {
+  background: #f0f2f5;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  color: #7a8a9a;
+}
+
+.sub-section {
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #e8ecf0;
+  padding: 22px 28px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.sub-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sub-intro {
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.7;
+}
+
+.sub-intro :deep(p) { margin: 0 0 8px; }
+.sub-intro :deep(ul), .sub-intro :deep(ol) { padding-left: 22px; margin: 6px 0; }
+.sub-intro :deep(a) { color: #3a7bd5; }
+
+.sub-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-submitted-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f6f8fa;
+  border-radius: 8px;
+  border: 1px solid #e8ecf0;
+}
+
+.sub-file-icon {
+  font-size: 18px;
+  color: #3a7bd5;
+  flex-shrink: 0;
+}
+
+.sub-file-name {
+  font-size: 13.5px;
+  color: #1b2a3b;
+  flex: 1;
+  font-weight: 500;
+}
+
+.sub-file-size {
+  font-size: 12px;
+  color: #9aabb8;
+  flex-shrink: 0;
+}
+
+.sub-dropzone {
+  border: 2px dashed #d0d9e6;
+  border-radius: 12px;
+  padding: 30px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: #fafbfc;
+}
+
+.sub-dropzone:hover {
+  border-color: #7aa8d8;
+  background: #f0f6ff;
+}
+
+.sub-drop-icon {
+  font-size: 32px;
+  color: #b0bac8;
+  margin-bottom: 8px;
+}
+
+.sub-drop-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #5a6a7a;
+  margin-bottom: 4px;
+}
+
+.sub-drop-hint {
+  font-size: 12px;
+  color: #9aabb8;
+}
+
+.sub-selected-files {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-sel-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #f6f8fa;
+  border-radius: 9px;
+  border: 1px solid #e8ecf0;
+  gap: 12px;
+}
+
+.sub-sel-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sub-sel-icon {
+  font-size: 20px;
+  color: #3a7bd5;
+  flex-shrink: 0;
+}
+
+.sub-sel-error { color: #f56c6c; }
+
+.sub-sel-info {
+  min-width: 0;
+}
+
+.sub-sel-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1b2a3b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+}
+
+.sub-sel-status {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.sub-sel-uploading { color: #e6a23c; }
+.sub-sel-ok { color: #67c23a; }
+.sub-sel-err { color: #f56c6c; }
+
+.sub-sel-remove {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #b0bac8;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.sub-sel-remove:hover {
+  background: #fee2e2;
+  color: #f56c6c;
+}
+
+.sub-summary {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: #7a8a9a;
+  display: flex;
+  gap: 6px;
+}
+
+.sub-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.sub-submit-btn {
+  height: 46px !important;
+  padding: 0 32px !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  background: #1b2a3b !important;
+  border-color: #1b2a3b !important;
+  color: #fff !important;
+  border-radius: 10px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.sub-submit-btn:hover:not(:disabled) {
+  background: #243040 !important;
+  border-color: #243040 !important;
+}
+
+.sub-submit-btn:disabled {
+  opacity: 0.4 !important;
+}
+
+.sub-submit-hint {
+  font-size: 12px;
+  color: #f56c6c;
+  min-height: 16px;
 }
 </style>

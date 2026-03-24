@@ -1,4 +1,4 @@
-# GT-IIT Campus Dashboard
+# GTIIT Campus Dashboard
 
 本地桌面端聚合面板，将公网 **Moodle** 学习系统与内网 **Students** 成绩系统整合在同一个 Dashboard 中展示。
 
@@ -17,7 +17,7 @@
 
 ### 认证与登录
 
-- **GT-IIT SSO 一键登录**：使用 Microsoft Office 365 SSO，在共享 `persist:students` session 分区内完成认证。Moodle `launch.php` 的 `moodlemobile://` token 重定向在 Electron session 层拦截，Students 内网系统同一次 Office 365 会话复用，无需二次输入密码。
+- **GTIIT SSO 一键登录**：使用 Microsoft Office 365 SSO，在共享 `persist:students` session 分区内完成认证。Moodle `launch.php` 的 `moodlemobile://` token 重定向在 Electron session 层拦截，Students 内网系统同一次 Office 365 会话复用，无需二次输入密码。
 - **账号密码备用登录**：直接调用 Moodle `token.php` 换取 `wstoken`，网络异常或 SSO 不可用时使用。
 - 自定义无边框窗口 + 顶部 Title Bar（Logo、应用名、窗口控制按钮）。
 
@@ -86,7 +86,7 @@ pnpm vite build
 - [x] Phase 2：Moodle 账号密码登录与课程同步
 - [x] Phase 3：Students 内网 RPA 自动化与成绩抓取
 - [x] Phase 4：Dashboard UI 设计（自定义 Title Bar、核心指标卡、课程网格）
-- [x] Phase 5：GT-IIT SSO 一键登录（Office 365 共享 session，Moodle + Students 同时打通）
+- [x] Phase 5：GTIIT SSO 一键登录（Office 365 共享 session，Moodle + Students 同时打通）
 - [ ] 课件资源筛选与本地缓存
 - [ ] 多语言支持（中文 / 英文）
 - [ ] 打包分发（electron-builder）

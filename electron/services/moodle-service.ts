@@ -1,6 +1,8 @@
 import axios from 'axios'
 import Store from 'electron-store'
-import { BrowserWindow, session } from 'electron'
+import { BrowserWindow, net, session } from 'electron'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { DashboardDb } from '../dashboard-db'
 
 type MoodleProfile = {
@@ -55,6 +57,107 @@ type MoodleTimelineCourses = {
   courses: MoodleCourse[]
 }
 
+type MoodleCalendarEvent = {
+  id: number
+  name: string
+  description?: string
+  courseid: number
+  timestart: number
+  timesort: number
+  modulename?: string
+  instance: number
+  course?: { id: number; fullname: string; shortname: string }
+  action?: { name: string; url: string; actionable: boolean }
+  url?: string
+}
+
+type MoodleCalendarResponse = {
+  events: MoodleCalendarEvent[]
+  firstid?: number
+  lastid?: number
+}
+
+type MoodleAssignmentRaw = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  introformat: number
+  duedate: number
+  allowsubmissionsfromdate: number
+  configs: Array<{ plugin: string; subtype: string; name: string; value: string }>
+}
+
+type MoodleAssignmentsResponse = {
+  courses: Array<{ id: number; assignments: MoodleAssignmentRaw[] }>
+}
+
+type MoodleSubmissionPlugin = {
+  type: string
+  name: string
+  fileareas?: Array<{
+    area: string
+    files: Array<{ filename: string; filesize: number; fileurl: string }>
+  }>
+}
+
+type MoodleSubmissionStatusRaw = {
+  gradingsummary?: {
+    submissionsenabled: boolean
+    submissiondrafts: boolean
+    cansubmit: boolean
+    duedate: number
+  }
+  lastattempt?: {
+    submission?: {
+      id: number
+      status: string
+      plugins: MoodleSubmissionPlugin[]
+    }
+    cansubmit: boolean
+    caneditsettings: boolean
+  }
+}
+
+export type TimelineEvent = {
+  id: number
+  name: string
+  description: string
+  courseid: number
+  coursename: string
+  timestart: number
+  timesort: number
+  modulename: string
+  /** cmid extracted from actionUrl (?id=CMID) — reliable identifier */
+  cmid: number
+  actionUrl: string
+}
+
+export type AssignmentDetail = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  duedate: number
+  allowsubmissionsfromdate: number
+  fileSubmissionEnabled: boolean
+  maxFileSubmissions: number
+  allowedFileTypes: string
+}
+
+export type SubmissionStatus = {
+  status: string
+  canSubmit: boolean
+  canEdit: boolean
+  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+}
+
+export type UploadedFile = {
+  itemid: number
+  filename: string
+  fileSize: number
+}
+
 const MOODLE_BASE = 'https://moodle.gtiit.edu.cn/moodle'
 const MOODLE_TOKEN_URL = `${MOODLE_BASE}/login/token.php`
 const MOODLE_WS_URL = `${MOODLE_BASE}/webservice/rest/server.php`
@@ -64,6 +167,8 @@ export class MoodleService {
   private appStore: Store<PersistedState>
   private moodleSessions = new Map<string, { token: string; username: string }>()
   private activeUsername: string | null = null
+  /** In-memory cache: cmid → AssignmentDetail (cleared on logout) */
+  private assignmentCache = new Map<number, AssignmentDetail>()
 
   constructor(private readonly db: DashboardDb) {
     this.appStore = new Store<PersistedState>({
@@ -435,12 +540,259 @@ export class MoodleService {
     })
   }
 
+  async getTimeline(payload?: { username?: string; daysAhead?: number }): Promise<TimelineEvent[]> {
+    const session = this.ensureSession(payload?.username)
+    const now = Math.floor(Date.now() / 1000)
+    const daysAhead = payload?.daysAhead ?? 30
+    const timesortto = now + daysAhead * 24 * 60 * 60
+
+    const data = await this.callMoodleWs<MoodleCalendarResponse>(
+      'core_calendar_get_action_events_by_timesort',
+      session.token,
+      {
+        timesortfrom: now,
+        timesortto,
+        limitnum: 50,
+        limittononsuspendedevents: 1,
+      },
+    )
+
+    return (data.events ?? []).map((event) => {
+      const actionUrl = event.action?.url ?? event.url ?? ''
+      const cmidMatch = actionUrl.match(/[?&]id=(\d+)/)
+      const cmid = cmidMatch ? parseInt(cmidMatch[1], 10) : 0
+      return {
+        id: event.id,
+        name: event.name,
+        description: event.description ?? '',
+        courseid: event.courseid,
+        coursename: event.course?.fullname ?? '',
+        timestart: event.timestart,
+        timesort: event.timesort,
+        modulename: event.modulename ?? '',
+        cmid,
+        actionUrl,
+      }
+    })
+  }
+
+  async getAssignmentDetail(payload: { cmid: number; courseId: number; username?: string }): Promise<AssignmentDetail> {
+    const session = this.ensureSession(payload?.username)
+    const data = await this.callMoodleWs<MoodleAssignmentsResponse>(
+      'mod_assign_get_assignments',
+      session.token,
+      { 'courseids[0]': payload.courseId },
+    )
+
+    const allAssignments = (data.courses ?? []).flatMap((c) => c.assignments ?? [])
+    // Match by cmid (the course module ID extracted from the event URL — reliable)
+    const assign = allAssignments.find((a) => a.cmid === payload.cmid)
+    if (!assign) throw new Error(`未找到课程模块 cmid=${payload.cmid} 对应的作业`)
+
+    const configs = assign.configs ?? []
+    const getConfig = (plugin: string, name: string) =>
+      configs.find((c) => c.plugin === plugin && c.name === name)?.value ?? ''
+
+    const fileEnabled = getConfig('file', 'enabled') === '1'
+    const maxFiles = parseInt(getConfig('file', 'maxfilesubmissions') || '1', 10)
+    const fileTypes = getConfig('file', 'filetypesList') ?? ''
+
+    return {
+      id: assign.id,
+      cmid: assign.cmid,
+      name: assign.name,
+      intro: assign.intro,
+      duedate: assign.duedate,
+      allowsubmissionsfromdate: assign.allowsubmissionsfromdate,
+      fileSubmissionEnabled: fileEnabled,
+      maxFileSubmissions: isNaN(maxFiles) ? 1 : maxFiles,
+      allowedFileTypes: fileTypes,
+    }
+  }
+
+  async getSubmissionStatus(payload: { assignId: number; username?: string }): Promise<SubmissionStatus> {
+    const session = this.ensureSession(payload?.username)
+    const data = await this.callMoodleWs<MoodleSubmissionStatusRaw>(
+      'mod_assign_get_submission_status',
+      session.token,
+      { assignid: payload.assignId },
+    )
+    return this.parseSubmissionStatus(data, session.token)
+  }
+
+  private parseSubmissionStatus(data: MoodleSubmissionStatusRaw, token: string): SubmissionStatus {
+    const attempt = data.lastattempt
+    const submission = attempt?.submission
+    const filePlugin = submission?.plugins?.find((p) => p.type === 'file')
+    const submissionFiles = filePlugin?.fileareas?.find((a) => a.area === 'submission_files')?.files ?? []
+    const canSubmit =
+      attempt?.cansubmit ??
+      data.gradingsummary?.cansubmit ??
+      (data.gradingsummary?.submissionsenabled !== false)
+    return {
+      status: submission?.status ?? 'new',
+      canSubmit,
+      canEdit: attempt?.caneditsettings ?? true,
+      submittedFiles: submissionFiles.map((f) => ({
+        filename: f.filename,
+        filesize: f.filesize,
+        fileurl: this.withToken(f.fileurl, token),
+      })),
+    }
+  }
+
+  /**
+   * Combined method: fetches assignment detail + submission status with minimal latency.
+   * Strategy:
+   *   1. Fast call: core_course_get_course_module(cmid) → get real assignId (~0.3 s)
+   *   2. Parallel:  mod_assign_get_assignments(courseId) + mod_assign_get_submission_status(assignId)
+   *   3. Cache assignment detail (cmid → detail) so subsequent opens skip step 1+2a
+   */
+  async getAssignmentWithStatus(payload: { cmid: number; courseId: number; username?: string }): Promise<{
+    detail: AssignmentDetail
+    status: SubmissionStatus
+  }> {
+    const sess = this.ensureSession(payload?.username)
+
+    const cached = this.assignmentCache.get(payload.cmid)
+    if (cached) {
+      // Cache hit: only fetch the live submission status
+      const statusData = await this.callMoodleWs<MoodleSubmissionStatusRaw>(
+        'mod_assign_get_submission_status', sess.token, { assignid: cached.id },
+      )
+      return { detail: cached, status: this.parseSubmissionStatus(statusData, sess.token) }
+    }
+
+    // Cache miss: resolve real assignId from cmid, then fetch detail + status in parallel
+    const moduleData = await this.callMoodleWs<{ cm: { instance: number; modname: string } }>(
+      'core_course_get_course_module', sess.token, { cmid: payload.cmid },
+    )
+    const assignId = moduleData.cm.instance
+
+    const [assignmentsData, statusData] = await Promise.all([
+      this.callMoodleWs<MoodleAssignmentsResponse>(
+        'mod_assign_get_assignments', sess.token, { 'courseids[0]': payload.courseId },
+      ),
+      this.callMoodleWs<MoodleSubmissionStatusRaw>(
+        'mod_assign_get_submission_status', sess.token, { assignid: assignId },
+      ),
+    ])
+
+    const allAssignments = (assignmentsData.courses ?? []).flatMap((c) => c.assignments ?? [])
+    const assign = allAssignments.find((a) => a.cmid === payload.cmid)
+    if (!assign) throw new Error(`未找到课程模块 cmid=${payload.cmid} 对应的作业`)
+
+    const configs = assign.configs ?? []
+    const getConfig = (plugin: string, name: string) =>
+      configs.find((c) => c.plugin === plugin && c.name === name)?.value ?? ''
+
+    const detail: AssignmentDetail = {
+      id: assign.id,
+      cmid: assign.cmid,
+      name: assign.name,
+      intro: assign.intro,
+      duedate: assign.duedate,
+      allowsubmissionsfromdate: assign.allowsubmissionsfromdate,
+      fileSubmissionEnabled: getConfig('file', 'enabled') === '1',
+      maxFileSubmissions: parseInt(getConfig('file', 'maxfilesubmissions') || '1', 10) || 1,
+      allowedFileTypes: getConfig('file', 'filetypesList') ?? '',
+    }
+    this.assignmentCache.set(payload.cmid, detail)
+
+    return { detail, status: this.parseSubmissionStatus(statusData, sess.token) }
+  }
+
+  async uploadFile(payload: { filePath: string; username?: string }): Promise<UploadedFile> {
+    const sess = this.ensureSession(payload?.username)
+    const filePath = payload.filePath
+    const filename = path.basename(filePath)
+    const fileBuffer = readFileSync(filePath)
+    const fileSize = fileBuffer.length
+
+    const ext = path.extname(filename).toLowerCase().slice(1)
+    const MIME: Record<string, string> = {
+      pdf: 'application/pdf',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      zip: 'application/zip',
+      rar: 'application/x-rar-compressed',
+      txt: 'text/plain',
+      mp4: 'video/mp4',
+      mp3: 'audio/mpeg',
+    }
+    const mimeType = MIME[ext] ?? 'application/octet-stream'
+
+    // Build multipart body manually and use Electron net.fetch (Chromium networking stack)
+    // — far more reliable than axios or Node global fetch in the main process
+    const boundary = `WebKitFormBoundary${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+    const CRLF = '\r\n'
+    const enc = (s: string) => Buffer.from(s, 'utf8')
+
+    const body = Buffer.concat([
+      enc(`--${boundary}${CRLF}Content-Disposition: form-data; name="token"${CRLF}${CRLF}${sess.token}${CRLF}`),
+      enc(`--${boundary}${CRLF}Content-Disposition: form-data; name="filearea"${CRLF}${CRLF}draft${CRLF}`),
+      enc(`--${boundary}${CRLF}Content-Disposition: form-data; name="itemid"${CRLF}${CRLF}0${CRLF}`),
+      enc(`--${boundary}${CRLF}Content-Disposition: form-data; name="file_1"; filename="${filename}"${CRLF}Content-Type: ${mimeType}${CRLF}${CRLF}`),
+      fileBuffer,
+      enc(`${CRLF}--${boundary}--${CRLF}`),
+    ])
+
+    const response = await net.fetch(`${MOODLE_BASE}/webservice/upload.php`, {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body: body,
+    })
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`文件上传失败 (HTTP ${response.status}): ${text.slice(0, 300)}`)
+    }
+
+    const data = await response.json() as Array<{ itemid: number; filename: string }> | { error?: string; exception?: string; message?: string }
+    if (!Array.isArray(data)) {
+      const errMsg = (data as { message?: string }).message ?? JSON.stringify(data)
+      throw new Error(`文件上传失败: ${errMsg}`)
+    }
+    if (data[0]?.itemid == null) {
+      throw new Error(`文件上传返回格式异常: ${JSON.stringify(data)}`)
+    }
+    return { itemid: data[0].itemid, filename: data[0].filename ?? filename, fileSize }
+  }
+
+  async saveSubmission(payload: { assignId: number; draftItemId: number; username?: string }): Promise<boolean> {
+    const session = this.ensureSession(payload?.username)
+    const data = await this.callMoodleWs<{ savedsuccess?: boolean; warnings?: unknown[] }>(
+      'mod_assign_save_submission',
+      session.token,
+      {
+        assignid: payload.assignId,
+        'plugindata[files_filemanager]': payload.draftItemId,
+        'plugindata[onlinetext_editor][text]': '',
+        'plugindata[onlinetext_editor][format]': 1,
+        'plugindata[onlinetext_editor][itemid]': 0,
+      },
+    )
+    if (data && typeof data === 'object' && 'exception' in (data as Record<string, unknown>)) {
+      throw new Error((data as { message?: string }).message ?? '提交失败')
+    }
+    return true
+  }
+
   logout(payload?: { username?: string }) {
     const username = payload?.username?.trim() || this.activeUsername
     if (username) {
       this.moodleSessions.delete(username)
       if (this.activeUsername === username) this.activeUsername = null
     }
+    this.assignmentCache.clear()
     return true
   }
 }

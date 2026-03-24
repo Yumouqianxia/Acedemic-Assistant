@@ -93,6 +93,78 @@ const electronAPI = {
       userId: number
     }>
   },
+  moodleTimeline(payload?: { username?: string; daysAhead?: number }) {
+    return ipcRenderer.invoke('moodle:timeline', payload) as Promise<Array<{
+      id: number
+      name: string
+      description: string
+      courseid: number
+      coursename: string
+      timestart: number
+      timesort: number
+      modulename: string
+      cmid: number
+      actionUrl: string
+    }>>
+  },
+  moodleAssignmentDetailWithStatus(payload: { cmid: number; courseId: number; username?: string }) {
+    return ipcRenderer.invoke('moodle:assignment:detail-with-status', payload) as Promise<{
+      detail: {
+        id: number
+        cmid: number
+        name: string
+        intro: string
+        duedate: number
+        allowsubmissionsfromdate: number
+        fileSubmissionEnabled: boolean
+        maxFileSubmissions: number
+        allowedFileTypes: string
+      }
+      status: {
+        status: string
+        canSubmit: boolean
+        canEdit: boolean
+        submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+      }
+    }>
+  },
+  moodleAssignmentDetail(payload: { cmid: number; courseId: number; username?: string }) {
+    return ipcRenderer.invoke('moodle:assignment:detail', payload) as Promise<{
+      id: number
+      cmid: number
+      name: string
+      intro: string
+      duedate: number
+      allowsubmissionsfromdate: number
+      fileSubmissionEnabled: boolean
+      maxFileSubmissions: number
+      allowedFileTypes: string
+    }>
+  },
+  moodleAssignmentSubmissionStatus(payload: { assignId: number; username?: string }) {
+    return ipcRenderer.invoke('moodle:assignment:submission-status', payload) as Promise<{
+      status: string
+      canSubmit: boolean
+      canEdit: boolean
+      submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+    }>
+  },
+  moodleAssignmentUploadFile(payload: { filePath: string; username?: string }) {
+    return ipcRenderer.invoke('moodle:assignment:upload-file', payload) as Promise<{
+      itemid: number
+      filename: string
+      fileSize: number
+    }>
+  },
+  moodleAssignmentSaveSubmission(payload: { assignId: number; draftItemId: number; username?: string }) {
+    return ipcRenderer.invoke('moodle:assignment:save-submission', payload) as Promise<boolean>
+  },
+  dialogOpenFile(options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) {
+    return ipcRenderer.invoke('dialog:open-file', options) as Promise<{
+      canceled: boolean
+      filePaths: string[]
+    }>
+  },
   studentsAuthenticate() {
     return ipcRenderer.invoke('students:authenticate') as Promise<{
       authenticated: boolean

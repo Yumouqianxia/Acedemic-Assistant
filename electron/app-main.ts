@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { DashboardDb } from './dashboard-db'
@@ -144,6 +144,35 @@ function registerIpcHandlers() {
       dashboardDb.setMeta('sync:auto:last', result)
     }
     return result
+  })
+
+  // ── Moodle Timeline & Submission ──────────────────────────────────────────
+  ipcMain.handle('moodle:timeline', (_event, payload?: { username?: string; daysAhead?: number }) => {
+    return ensureServices().moodleService.getTimeline(payload)
+  })
+  ipcMain.handle('moodle:assignment:detail', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
+    return ensureServices().moodleService.getAssignmentDetail(payload)
+  })
+  ipcMain.handle('moodle:assignment:detail-with-status', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
+    return ensureServices().moodleService.getAssignmentWithStatus(payload)
+  })
+  ipcMain.handle('moodle:assignment:submission-status', (_event, payload: { assignId: number; username?: string }) => {
+    return ensureServices().moodleService.getSubmissionStatus(payload)
+  })
+  ipcMain.handle('moodle:assignment:upload-file', (_event, payload: { filePath: string; username?: string }) => {
+    return ensureServices().moodleService.uploadFile(payload)
+  })
+  ipcMain.handle('moodle:assignment:save-submission', (_event, payload: { assignId: number; draftItemId: number; username?: string }) => {
+    return ensureServices().moodleService.saveSubmission(payload)
+  })
+
+  // ── File dialog ───────────────────────────────────────────────────────────
+  ipcMain.handle('dialog:open-file', async (_event, options?: Electron.OpenDialogOptions) => {
+    if (!win) return { canceled: true, filePaths: [] }
+    return dialog.showOpenDialog(win, {
+      properties: ['openFile', 'multiSelections'],
+      ...options,
+    })
   })
 
   // Window controls

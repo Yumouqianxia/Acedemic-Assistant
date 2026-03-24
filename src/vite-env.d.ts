@@ -69,6 +69,64 @@ interface Window {
       siteName: string
       userId: number
     }>
+    moodleTimeline: (payload?: { username?: string; daysAhead?: number }) => Promise<Array<{
+      id: number
+      name: string
+      description: string
+      courseid: number
+      coursename: string
+      timestart: number
+      timesort: number
+      modulename: string
+      cmid: number
+      actionUrl: string
+    }>>
+    moodleAssignmentDetailWithStatus: (payload: { cmid: number; courseId: number; username?: string }) => Promise<{
+      detail: {
+        id: number
+        cmid: number
+        name: string
+        intro: string
+        duedate: number
+        allowsubmissionsfromdate: number
+        fileSubmissionEnabled: boolean
+        maxFileSubmissions: number
+        allowedFileTypes: string
+      }
+      status: {
+        status: string
+        canSubmit: boolean
+        canEdit: boolean
+        submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+      }
+    }>
+    moodleAssignmentDetail: (payload: { cmid: number; courseId: number; username?: string }) => Promise<{
+      id: number
+      cmid: number
+      name: string
+      intro: string
+      duedate: number
+      allowsubmissionsfromdate: number
+      fileSubmissionEnabled: boolean
+      maxFileSubmissions: number
+      allowedFileTypes: string
+    }>
+    moodleAssignmentSubmissionStatus: (payload: { assignId: number; username?: string }) => Promise<{
+      status: string
+      canSubmit: boolean
+      canEdit: boolean
+      submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+    }>
+    moodleAssignmentUploadFile: (payload: { filePath: string; username?: string }) => Promise<{
+      itemid: number
+      filename: string
+      fileSize: number
+    }>
+    moodleAssignmentSaveSubmission: (payload: { assignId: number; draftItemId: number; username?: string }) => Promise<boolean>
+    dialogOpenFile: (options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{
+      canceled: boolean
+      filePaths: string[]
+    }>
     windowMinimize: () => Promise<void>
     windowMaximize: () => Promise<void>
     windowClose: () => Promise<void>

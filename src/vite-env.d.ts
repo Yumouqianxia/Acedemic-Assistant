@@ -123,6 +123,7 @@ interface Window {
       fileSize: number
     }>
     moodleAssignmentSaveSubmission: (payload: { assignId: number; draftItemId: number; username?: string }) => Promise<boolean>
+    openPdfViewer: (payload: { url: string; title?: string }) => Promise<boolean>
     dialogOpenFile: (options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{
       canceled: boolean
       filePaths: string[]

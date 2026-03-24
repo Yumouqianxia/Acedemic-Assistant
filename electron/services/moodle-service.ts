@@ -216,18 +216,36 @@ export class MoodleService {
     return data.token
   }
 
-  private async callMoodleWs<T>(wsfunction: string, token: string, extraParams: Record<string, string | number> = {}) {
-    const { data } = await axios.get<T>(MOODLE_WS_URL, {
-      params: {
-        wstoken: token,
-        moodlewsrestformat: 'json',
-        wsfunction,
-        ...extraParams,
-      },
-    })
+  private async callMoodleWs<T>(
+    wsfunction: string,
+    token: string,
+    extraParams: Record<string, string | number | boolean> = {},
+    options?: { method?: 'get' | 'post' },
+  ) {
+    const params: Record<string, string | number | boolean> = {
+      wstoken: token,
+      moodlewsrestformat: 'json',
+      wsfunction,
+      ...extraParams,
+    }
+    const method = options?.method ?? 'get'
+    const data = method === 'post'
+      ? (await axios.post<T>(
+          MOODLE_WS_URL,
+          new URLSearchParams(
+            Object.entries(params).map(([key, value]) => [key, String(value)]),
+          ).toString(),
+          {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          },
+        )).data
+      : (await axios.get<T>(MOODLE_WS_URL, { params })).data
+
     if (data && typeof data === 'object' && 'exception' in (data as Record<string, unknown>)) {
-      const msg = (data as { message?: string }).message ?? 'Moodle 接口返回异常'
-      throw new Error(msg)
+      const exceptionData = data as { message?: string; errorcode?: string; debuginfo?: string }
+      const msg = exceptionData.message ?? 'Moodle 接口返回异常'
+      const detail = [exceptionData.errorcode, exceptionData.debuginfo].filter(Boolean).join(' | ')
+      throw new Error(detail ? `${msg} (${detail})` : msg)
     }
     return data
   }
@@ -810,21 +828,80 @@ export class MoodleService {
 
   async saveSubmission(payload: { assignId: number; draftItemId: number; username?: string }): Promise<boolean> {
     const session = this.ensureSession(payload?.username)
-    const data = await this.callMoodleWs<{ savedsuccess?: boolean; warnings?: unknown[] }>(
-      'mod_assign_save_submission',
-      session.token,
+    const assignId = Number(payload.assignId)
+    const draftItemId = Number(payload.draftItemId)
+    if (!Number.isFinite(assignId) || assignId <= 0) throw new Error('作业 ID 无效')
+    if (!Number.isFinite(draftItemId) || draftItemId <= 0) throw new Error('上传草稿 ID 无效')
+
+    const variants: Array<{ name: string; params: Record<string, string | number | boolean> }> = [
       {
-        assignid: payload.assignId,
-        'plugindata[files_filemanager]': payload.draftItemId,
-        'plugindata[onlinetext_editor][text]': '',
-        'plugindata[onlinetext_editor][format]': 1,
-        'plugindata[onlinetext_editor][itemid]': 0,
+        name: 'files_filemanager(number)',
+        params: {
+          assignmentid: assignId,
+          'plugindata[files_filemanager]': draftItemId,
+        },
       },
-    )
-    if (data && typeof data === 'object' && 'exception' in (data as Record<string, unknown>)) {
-      throw new Error((data as { message?: string }).message ?? '提交失败')
+      {
+        name: 'files_filemanager(string)',
+        params: {
+          assignmentid: assignId,
+          'plugindata[files_filemanager]': String(draftItemId),
+        },
+      },
+      {
+        name: 'files(string)',
+        params: {
+          assignmentid: assignId,
+          'plugindata[files]': String(draftItemId),
+        },
+      },
+      {
+        name: 'files + files_filemanager',
+        params: {
+          assignmentid: assignId,
+          'plugindata[files]': String(draftItemId),
+          'plugindata[files_filemanager]': String(draftItemId),
+        },
+      },
+    ]
+
+    let lastError: Error | null = null
+    for (const variant of variants) {
+      try {
+        console.info('[moodle:save-submission] try', {
+          username: session.username,
+          assignId,
+          draftItemId,
+          variant: variant.name,
+        })
+        await this.callMoodleWs<{ savedsuccess?: boolean; warnings?: unknown[] }>(
+          'mod_assign_save_submission',
+          session.token,
+          variant.params,
+          { method: 'post' },
+        )
+        console.info('[moodle:save-submission] success', {
+          assignId,
+          draftItemId,
+          variant: variant.name,
+        })
+        return true
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        lastError = err
+        // Only retry when Moodle reports invalid parameters; other errors should fail fast.
+        if (!err.message.includes('Invalid parameter value detected')) {
+          throw err
+        }
+        console.warn('[moodle:save-submission] variant failed', {
+          assignId,
+          draftItemId,
+          variant: variant.name,
+          error: err.message,
+        })
+      }
     }
-    return true
+    throw lastError ?? new Error('提交失败')
   }
 
   logout(payload?: { username?: string }) {

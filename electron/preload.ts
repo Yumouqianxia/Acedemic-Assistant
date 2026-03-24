@@ -159,6 +159,9 @@ const electronAPI = {
   moodleAssignmentSaveSubmission(payload: { assignId: number; draftItemId: number; username?: string }) {
     return ipcRenderer.invoke('moodle:assignment:save-submission', payload) as Promise<boolean>
   },
+  openPdfViewer(payload: { url: string; title?: string }) {
+    return ipcRenderer.invoke('file:open-pdf', payload) as Promise<boolean>
+  },
   dialogOpenFile(options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) {
     return ipcRenderer.invoke('dialog:open-file', options) as Promise<{
       canceled: boolean

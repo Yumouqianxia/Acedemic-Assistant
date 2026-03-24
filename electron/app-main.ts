@@ -166,6 +166,21 @@ function registerIpcHandlers() {
     return ensureServices().moodleService.saveSubmission(payload)
   })
 
+  // ── PDF / file viewer ─────────────────────────────────────────────────────
+  ipcMain.handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {
+    const pdfWin = new BrowserWindow({
+      width: 1100,
+      height: 820,
+      title: payload.title ?? 'File Viewer',
+      autoHideMenuBar: true,
+      webPreferences: {
+        plugins: true,
+      },
+    })
+    pdfWin.loadURL(payload.url)
+    return true
+  })
+
   // ── File dialog ───────────────────────────────────────────────────────────
   ipcMain.handle('dialog:open-file', async (_event, options?: Electron.OpenDialogOptions) => {
     if (!win) return { canceled: true, filePaths: [] }

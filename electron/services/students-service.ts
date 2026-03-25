@@ -4,6 +4,13 @@ import { DashboardDb } from '../dashboard-db'
 const STUDENTS_URL = 'https://students.gtiit.edu.cn'
 const STUDENTS_API_BASE = 'https://slcm-rp.gtiit.edu.cn/UGDBrestApi/api/Students'
 const STUDENTS_PARTITION = 'persist:students'
+const SYNC_READY_MAX_RETRIES = 8
+const SYNC_READY_RETRY_MS = 600
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const now = () => Date.now()
+const elapsed = (start: number) => `${Date.now() - start}ms`
+const syncTrace = () => `students-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
 
 type RuntimeHints = {
   sid?: string
@@ -13,6 +20,24 @@ type RuntimeHints = {
   capturedHeaders?: Record<string, string>
   capturedApiUrl?: string
   updatedAt: number
+}
+
+type SyncOptions = {
+  discardRuntimeHints?: boolean
+  forceReload?: boolean
+}
+
+type WarmupOptions = {
+  forceReload?: boolean
+  timeoutMs?: number
+}
+
+const pickTokenFromHeaders = (headers: Record<string, string>) => {
+  const auth = headers.authorization || headers.Authorization || ''
+  const xToken = headers['x-access-token'] || headers['X-Access-Token'] || ''
+  if (xToken) return xToken
+  if (auth) return auth.startsWith('Bearer ') ? auth.slice(7).trim() : auth
+  return ''
 }
 
 export class StudentsService {
@@ -141,9 +166,36 @@ export class StudentsService {
     `) as Promise<{ sid?: string; version?: string; token?: string; apiBase?: string }>
   }
 
+  private async waitForMainFrameReady(windowRef: BrowserWindow, timeoutMs = 4000) {
+    const wc = windowRef.webContents
+    if (!wc.isLoadingMainFrame()) return
+    await new Promise<void>((resolve) => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        wc.removeListener('did-finish-load', onLoad)
+        wc.removeListener('did-fail-load', onFail)
+        resolve()
+      }
+      const onLoad = () => finish()
+      const onFail = (_event: Electron.Event, code: number, _desc: string, _url: string, isMainFrame: boolean) => {
+        if (!isMainFrame || code === -3) return
+        finish()
+      }
+      const timer = setTimeout(() => finish(), timeoutMs)
+      wc.once('did-finish-load', onLoad)
+      wc.once('did-fail-load', onFail)
+    })
+  }
+
   async authenticate() {
+    const started = now()
+    console.log('[students:authenticate] open auth window')
     if (this.studentsAuthWin && !this.studentsAuthWin.isDestroyed()) {
       this.studentsAuthWin.focus()
+      console.log('[students:authenticate] window already open')
       return { authenticated: false, reason: 'auth-window-already-open' }
     }
 
@@ -240,10 +292,73 @@ export class StudentsService {
       if (message.includes('ERR_ABORTED')) return
       if (!authWin.isDestroyed()) authWin.close()
     })
-    return resultPromise
+    const result = await resultPromise
+    console.log(`[students:authenticate] finish in ${elapsed(started)} result=${result.authenticated ? 'ok' : `fail:${result.reason ?? 'unknown'}`}`)
+    return result
   }
 
-  async sync() {
+  async warmupSession(options?: WarmupOptions) {
+    const trace = syncTrace()
+    const started = now()
+    const timeoutMs = options?.timeoutMs ?? 5000
+    console.log(`[students:warmup][${trace}] start forceReload=${Boolean(options?.forceReload)} timeoutMs=${timeoutMs}`)
+    const hidden = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        partition: STUDENTS_PARTITION,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+    try {
+      await hidden.loadURL(STUDENTS_URL)
+      if (options?.forceReload) {
+        hidden.webContents.reloadIgnoringCache()
+        await this.waitForMainFrameReady(hidden, Math.min(timeoutMs, 5000))
+      }
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        try {
+          const hints = await this.extractRuntimeHints(hidden)
+          this.studentsRuntimeHints = {
+            sid: hints.sid || this.studentsRuntimeHints?.sid || '',
+            version: hints.version || this.studentsRuntimeHints?.version || '',
+            token: hints.token || this.studentsRuntimeHints?.token || '',
+            apiBase: hints.apiBase || this.studentsRuntimeHints?.apiBase || STUDENTS_API_BASE,
+            capturedHeaders: this.studentsRuntimeHints?.capturedHeaders || {},
+            capturedApiUrl: this.studentsRuntimeHints?.capturedApiUrl || '',
+            updatedAt: Date.now(),
+          }
+        } catch {
+          // keep polling until timeout
+        }
+        const headerAuth = this.studentsRuntimeHints?.capturedHeaders?.authorization
+          || this.studentsRuntimeHints?.capturedHeaders?.Authorization
+          || this.studentsRuntimeHints?.capturedHeaders?.['x-access-token']
+          || this.studentsRuntimeHints?.capturedHeaders?.['X-Access-Token']
+        const hasSid = Boolean(this.studentsRuntimeHints?.sid)
+        const hasAuth = Boolean(this.studentsRuntimeHints?.token || headerAuth)
+        if (hasSid && hasAuth) {
+          console.log(`[students:warmup][${trace}] ready in ${elapsed(started)}`)
+          return { ready: true, elapsedMs: Date.now() - started }
+        }
+        await sleep(300)
+      }
+      console.log(`[students:warmup][${trace}] timeout in ${elapsed(started)}`)
+      return { ready: false, elapsedMs: Date.now() - started, reason: 'timeout' }
+    } finally {
+      if (!hidden.isDestroyed()) hidden.destroy()
+    }
+  }
+
+  async sync(options?: SyncOptions) {
+    const trace = syncTrace()
+    const started = now()
+    console.log(`[students:sync][${trace}] start discardRuntimeHints=${Boolean(options?.discardRuntimeHints)} forceReload=${Boolean(options?.forceReload)}`)
+    if (options?.discardRuntimeHints) {
+      this.studentsRuntimeHints = null
+      console.log(`[students:sync][${trace}] runtime hints cleared`)
+    }
     const hidden = new BrowserWindow({
       show: false,
       webPreferences: {
@@ -254,7 +369,15 @@ export class StudentsService {
     })
 
     try {
+      const loadStarted = now()
       await hidden.loadURL(STUDENTS_URL)
+      console.log(`[students:sync][${trace}] loadURL done in ${elapsed(loadStarted)}`)
+      if (options?.forceReload) {
+        const reloadStarted = now()
+        hidden.webContents.reloadIgnoringCache()
+        await this.waitForMainFrameReady(hidden, 5000)
+        console.log(`[students:sync][${trace}] reloadIgnoringCache done in ${elapsed(reloadStarted)}`)
+      }
       const currentUrl = hidden.webContents.getURL()
       if (!this.isStudentsDashboardUrl(currentUrl)) {
         throw new Error('Students 当前未登录，请先完成验证')
@@ -301,6 +424,7 @@ export class StudentsService {
         error?: string
       }>
 
+      const endpointStarted = now()
       let endpointMeta = await readEndpointMeta()
       if (!endpointMeta.currentsemester && !endpointMeta.enrollments) {
         for (let i = 0; i < 5; i += 1) {
@@ -309,6 +433,7 @@ export class StudentsService {
           if (endpointMeta.currentsemester || endpointMeta.enrollments) break
         }
       }
+      console.log(`[students:sync][${trace}] endpoint meta ready in ${elapsed(endpointStarted)} hasCurrent=${Boolean(endpointMeta.currentsemester)} hasEnroll=${Boolean(endpointMeta.enrollments)} sid=${Boolean(endpointMeta.sid)}`)
       if (!endpointMeta.ok) {
         throw new Error(`Students 同步脚本失败: ${endpointMeta.error || 'extract-endpoint-meta-failed'} @ ${currentUrl}`)
       }
@@ -320,7 +445,7 @@ export class StudentsService {
       })
       const cookieHeader = relatedCookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
 
-      const authMeta = await hidden.webContents.executeJavaScript(`
+      let authMeta = await hidden.webContents.executeJavaScript(`
         (() => {
           const kv = {};
           const collect = (store) => {
@@ -374,6 +499,24 @@ export class StudentsService {
           .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
           .join('&')
 
+      let effectiveToken = authMeta?.token || this.studentsRuntimeHints?.token || ''
+      let sid = (endpointMeta.sid || authMeta.sessionID || this.studentsRuntimeHints?.sid || '').replace(/^"+|"+$/g, '')
+      let version = endpointMeta.version || this.studentsRuntimeHints?.version || ''
+
+      if (!sid || !effectiveToken) {
+        const waitReadyStarted = now()
+        for (let i = 0; i < SYNC_READY_MAX_RETRIES; i += 1) {
+          await sleep(SYNC_READY_RETRY_MS)
+          endpointMeta = await readEndpointMeta()
+          authMeta = await this.extractRuntimeHints(hidden).catch(() => ({}))
+          sid = (endpointMeta.sid || authMeta.sessionID || this.studentsRuntimeHints?.sid || '').replace(/^"+|"+$/g, '')
+          version = endpointMeta.version || this.studentsRuntimeHints?.version || ''
+          effectiveToken = authMeta?.token || this.studentsRuntimeHints?.token || ''
+          if (sid && effectiveToken) break
+        }
+        console.log(`[students:sync][${trace}] ready-wait done in ${elapsed(waitReadyStarted)} sid=${Boolean(sid)} token=${Boolean(effectiveToken)}`)
+      }
+
       const defaultHeaders: Record<string, string> = {
         Accept: 'application/json, text/plain, */*',
         Referer: STUDENTS_URL,
@@ -385,9 +528,13 @@ export class StudentsService {
           if (value) defaultHeaders[key] = value
         })
       if (cookieHeader) defaultHeaders.Cookie = cookieHeader
-      const effectiveToken = authMeta?.token || this.studentsRuntimeHints?.token || ''
-      if (effectiveToken) {
+      const capturedToken = pickTokenFromHeaders(defaultHeaders)
+      // Prefer live captured request headers over storage-derived token to avoid stale token 401.
+      effectiveToken = capturedToken || effectiveToken
+      if (effectiveToken && !defaultHeaders.authorization && !defaultHeaders.Authorization) {
         defaultHeaders.Authorization = effectiveToken.startsWith('Bearer ') ? effectiveToken : `Bearer ${effectiveToken}`
+      }
+      if (effectiveToken && !defaultHeaders['x-access-token'] && !defaultHeaders['X-Access-Token']) {
         defaultHeaders['x-access-token'] = effectiveToken
       }
 
@@ -407,11 +554,12 @@ export class StudentsService {
           }
           errors.push(`${response.status}:${path}`)
         }
+        if (errors.some((item) => item.startsWith('401:'))) {
+          throw new Error(`Students 会话已过期(401):${errors.join(' | ')}`)
+        }
         throw new Error(`all-candidates-failed:${errors.join(' | ')}`)
       }
 
-      const sid = (endpointMeta.sid || authMeta.sessionID || this.studentsRuntimeHints?.sid || '').replace(/^"+|"+$/g, '')
-      const version = endpointMeta.version || this.studentsRuntimeHints?.version || ''
       const apiBase = this.studentsRuntimeHints?.apiBase || STUDENTS_API_BASE
       this.studentsRuntimeHints = {
         sid: sid || this.studentsRuntimeHints?.sid || '',
@@ -432,6 +580,7 @@ export class StudentsService {
         throw new Error(`Students 未捕获到 Authorization，请先完成认证后停留2秒。capturedApiUrl:${hintUrl}`)
       }
 
+      const currentSemesterStarted = now()
       const currentSemesterResp = await requestFirstOk<Array<{ semesterTechnion: string; semesterName: string; isCurrent: boolean }>>([
         endpointMeta.currentsemester || '',
         `${apiBase}/currentsemester?${buildQuery({ sid, v: version })}`,
@@ -441,12 +590,14 @@ export class StudentsService {
         '/currentsemester',
         '/api/currentsemester',
       ])
+      console.log(`[students:sync][${trace}] currentsemester fetched in ${elapsed(currentSemesterStarted)}`)
 
       const semesters = Array.isArray(currentSemesterResp.data) ? currentSemesterResp.data : []
       const currentSemester = semesters.find((item) => item?.isCurrent) ?? null
       const semesterTechnion = currentSemester?.semesterTechnion ?? ''
       const semesterName = currentSemester?.semesterName ?? ''
 
+      const dataFetchStarted = now()
       const [enrollmentsResp, examsResp, profileResp] = await Promise.all([
         requestFirstOk<Array<{ semesterTechnion: string; courseName: string; courseCode: string; credit: string }>>([
           endpointMeta.enrollments || '',
@@ -481,6 +632,7 @@ export class StudentsService {
           '/api/profile',
         ]),
       ])
+      console.log(`[students:sync][${trace}] enrollments/exams/profile fetched in ${elapsed(dataFetchStarted)}`)
 
       const text = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
       const enrollments = Array.isArray(enrollmentsResp.data) ? enrollmentsResp.data : []
@@ -566,13 +718,15 @@ export class StudentsService {
         this.db.setMeta('students:profile', data.profile)
       }
 
-      return {
+      const result = {
         ...data,
         delta: {
           courses: courseDelta,
           exams: examDelta,
         },
       }
+      console.log(`[students:sync][${trace}] finish in ${elapsed(started)} courses=${result.courses.length} exams=${result.exams.length}`)
+      return result
     } finally {
       if (!hidden.isDestroyed()) hidden.destroy()
     }

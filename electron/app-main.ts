@@ -23,6 +23,28 @@ let autoSyncRunning = false
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
+const STUDENTS_RETRY_SETTLE_MS = 600
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const now = () => Date.now()
+const elapsed = (start: number) => `${Date.now() - start}ms`
+const syncTag = () => `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+
+const isStudentsNotReadyError = (message: string) => {
+  const msg = message.toLowerCase()
+  return msg.includes('未捕获到 authorization')
+    || msg.includes('未检测到 sid')
+    || msg.includes('session')
+    || msg.includes('not ready')
+}
+
+const shouldRetryWithStudentsAuth = (message: string) => {
+  const msg = message.toLowerCase()
+  return msg.includes('当前未登录')
+    || msg.includes('未登录')
+    || msg.includes('未捕获到 authorization')
+    || msg.includes('未检测到 sid')
+}
 
 function ensureServices() {
   if (!dashboardDb || !moodleService || !studentsService) {
@@ -94,31 +116,97 @@ function registerIpcHandlers() {
 
   ipcMain.handle('dashboard:get', () => ensureServices().dashboardDb.getDashboardSnapshot())
   ipcMain.handle('dashboard:sync-all', async (_event, payload?: { username?: string; trigger?: 'manual' | 'login' | 'auto' }) => {
+    const trace = syncTag()
+    const startedAt = now()
     const trigger = payload?.trigger ?? 'manual'
     const { dashboardDb, moodleService, studentsService } = ensureServices()
+    console.log(`[dashboard:sync-all][${trace}] start trigger=${trigger} username=${payload?.username ?? 'unknown'}`)
+    const moodleStarted = now()
     const moodle = await moodleService.sync({ username: payload?.username })
+    console.log(`[dashboard:sync-all][${trace}] moodle.sync done in ${elapsed(moodleStarted)}`)
     let students:
       | Awaited<ReturnType<StudentsService['sync']>>
       | null = null
     let studentsError: string | null = null
 
-    const tryStudentsSync = async () => {
-      students = await studentsService.sync()
+    const tryStudentsSync = async (
+      label: string,
+      options?: { discardRuntimeHints?: boolean; forceReload?: boolean },
+    ) => {
+      const s = now()
+      console.log(`[dashboard:sync-all][${trace}] students.sync attempt=${label} begin`)
+      students = await studentsService.sync({
+        discardRuntimeHints: options?.discardRuntimeHints ?? false,
+        forceReload: options?.forceReload ?? false,
+      })
+      console.log(`[dashboard:sync-all][${trace}] students.sync attempt=${label} success in ${elapsed(s)}`)
     }
 
     try {
-      await tryStudentsSync()
+      await tryStudentsSync('first')
     } catch (firstError) {
       const firstMsg = firstError instanceof Error ? firstError.message : String(firstError)
-      const isNotLoggedIn = firstMsg.includes('当前未登录') || firstMsg.includes('未登录')
+      console.warn(`[dashboard:sync-all][${trace}] students first attempt failed: ${firstMsg}`)
+      const isNotReady = trigger === 'login' && isStudentsNotReadyError(firstMsg)
 
-      if (isNotLoggedIn) {
+      if (isNotReady) {
+        try {
+          console.log(`[dashboard:sync-all][${trace}] students not-ready detected, warmup session then retry`)
+          const warmup = await studentsService.warmupSession({
+            forceReload: true,
+            timeoutMs: 4500,
+          })
+          console.log(`[dashboard:sync-all][${trace}] warmup result ready=${warmup.ready} elapsed=${warmup.elapsedMs}ms`)
+          await sleep(STUDENTS_RETRY_SETTLE_MS)
+          await tryStudentsSync('after-warmup')
+        } catch (retryAfterSettleError) {
+          const retryMsg = retryAfterSettleError instanceof Error ? retryAfterSettleError.message : String(retryAfterSettleError)
+          console.warn(`[dashboard:sync-all][${trace}] students retry-after-settle failed: ${retryMsg}`)
+          if (trigger !== 'login' && shouldRetryWithStudentsAuth(retryMsg)) {
+            try {
+              const authStarted = now()
+              console.log(`[dashboard:sync-all][${trace}] opening students auth window due to: ${retryMsg}`)
+              const authResult = await studentsService.authenticate()
+              console.log(`[dashboard:sync-all][${trace}] students authenticate done in ${elapsed(authStarted)} result=${authResult.authenticated ? 'ok' : `fail:${authResult.reason ?? 'unknown'}`}`)
+              if (authResult.authenticated) {
+                try {
+                  await sleep(1000)
+                  await tryStudentsSync('after-auth')
+                } catch (retryError) {
+                  studentsError = retryError instanceof Error ? retryError.message : String(retryError)
+                }
+              } else {
+                studentsError = `Students 认证未完成（${authResult.reason ?? 'cancelled'}），数据未同步`
+              }
+            } catch (authError) {
+              studentsError = authError instanceof Error ? authError.message : String(authError)
+            }
+          } else {
+            studentsError = retryMsg
+          }
+        }
+        if (students || studentsError) {
+          return {
+            trigger,
+            at: new Date().toISOString(),
+            moodle,
+            students,
+            studentsError,
+          }
+        }
+      }
+
+      if (trigger !== 'login' && shouldRetryWithStudentsAuth(firstMsg)) {
         // Auto-trigger the authentication window, then retry sync
         try {
+          const authStarted = now()
+          console.log(`[dashboard:sync-all][${trace}] opening students auth window due to first error`)
           const authResult = await studentsService.authenticate()
+          console.log(`[dashboard:sync-all][${trace}] students authenticate done in ${elapsed(authStarted)} result=${authResult.authenticated ? 'ok' : `fail:${authResult.reason ?? 'unknown'}`}`)
           if (authResult.authenticated) {
             try {
-              await tryStudentsSync()
+              await sleep(1000)
+              await tryStudentsSync('after-auth')
             } catch (retryError) {
               studentsError = retryError instanceof Error ? retryError.message : String(retryError)
             }
@@ -143,6 +231,7 @@ function registerIpcHandlers() {
     if (trigger === 'auto') {
       dashboardDb.setMeta('sync:auto:last', result)
     }
+    console.log(`[dashboard:sync-all][${trace}] finish in ${elapsed(startedAt)} students=${students ? 'ok' : 'none'} studentsError=${studentsError ?? 'none'}`)
     return result
   })
 

@@ -76,6 +76,12 @@ export type AssignmentDetail = {
   fileSubmissionEnabled: boolean
   maxFileSubmissions: number
   allowedFileTypes: string
+  introAttachments: Array<{
+    filename: string
+    filesize: number
+    fileurl: string
+    mimetype: string
+  }>
 }
 
 export type SubmissionStatus = {

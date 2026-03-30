@@ -119,6 +119,12 @@ const electronAPI = {
         fileSubmissionEnabled: boolean
         maxFileSubmissions: number
         allowedFileTypes: string
+        introAttachments: Array<{
+          filename: string
+          filesize: number
+          fileurl: string
+          mimetype: string
+        }>
       }
       status: {
         status: string
@@ -139,6 +145,12 @@ const electronAPI = {
       fileSubmissionEnabled: boolean
       maxFileSubmissions: number
       allowedFileTypes: string
+      introAttachments: Array<{
+        filename: string
+        filesize: number
+        fileurl: string
+        mimetype: string
+      }>
     }>
   },
   moodleAssignmentSubmissionStatus(payload: { assignId: number; username?: string }) {

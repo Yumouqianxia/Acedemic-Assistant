@@ -86,6 +86,12 @@ type MoodleAssignmentRaw = {
   duedate: number
   allowsubmissionsfromdate: number
   configs: Array<{ plugin: string; subtype: string; name: string; value: string }>
+  introattachments?: Array<{
+    filename: string
+    filesize: number
+    fileurl: string
+    mimetype: string
+  }>
 }
 
 type MoodleAssignmentsResponse = {
@@ -143,6 +149,12 @@ export type AssignmentDetail = {
   fileSubmissionEnabled: boolean
   maxFileSubmissions: number
   allowedFileTypes: string
+  introAttachments: Array<{
+    filename: string
+    filesize: number
+    fileurl: string
+    mimetype: string
+  }>
 }
 
 export type SubmissionStatus = {
@@ -625,6 +637,12 @@ export class MoodleService {
       fileSubmissionEnabled: fileEnabled,
       maxFileSubmissions: isNaN(maxFiles) ? 1 : maxFiles,
       allowedFileTypes: fileTypes,
+      introAttachments: (assign.introattachments ?? []).map((f) => ({
+        filename: f.filename,
+        filesize: f.filesize,
+        fileurl: this.withToken(f.fileurl, session.token),
+        mimetype: f.mimetype,
+      })),
     }
   }
 
@@ -714,6 +732,12 @@ export class MoodleService {
       fileSubmissionEnabled: getConfig('file', 'enabled') === '1',
       maxFileSubmissions: parseInt(getConfig('file', 'maxfilesubmissions') || '1', 10) || 1,
       allowedFileTypes: getConfig('file', 'filetypesList') ?? '',
+      introAttachments: (assign.introattachments ?? []).map((f) => ({
+        filename: f.filename,
+        filesize: f.filesize,
+        fileurl: this.withToken(f.fileurl, sess.token),
+        mimetype: f.mimetype,
+      })),
     }
     this.assignmentCache.set(payload.cmid, detail)
 

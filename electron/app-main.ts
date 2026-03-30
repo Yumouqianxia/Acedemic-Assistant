@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { autoUpdater } from 'electron-updater'
 import { DashboardDb } from './dashboard-db'
 import { MoodleService } from './services/moodle-service'
 import { StudentsService } from './services/students-service'
@@ -24,6 +25,7 @@ let autoSyncRunning = false
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
 const STUDENTS_RETRY_SETTLE_MS = 600
+const CHECK_UPDATES_DELAY_MS = 15_000
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const now = () => Date.now()
@@ -289,6 +291,37 @@ function registerIpcHandlers() {
   ipcMain.handle('window:is-maximized', () => win?.isMaximized() ?? false)
 }
 
+function setupAutoUpdater() {
+  if (VITE_DEV_SERVER_URL) return
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[updater] checking for updates')
+  })
+  autoUpdater.on('update-available', (info) => {
+    console.log(`[updater] update available: ${info.version}`)
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    console.log(`[updater] no updates. current target: ${info.version}`)
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = progress.percent.toFixed(1)
+    console.log(`[updater] download ${percent}% (${Math.round(progress.bytesPerSecond / 1024)} KB/s)`)
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log(`[updater] update downloaded: ${info.version}, will install on quit`)
+  })
+  autoUpdater.on('error', (error) => {
+    console.error('[updater] failed:', error)
+  })
+
+  setTimeout(() => {
+    void autoUpdater.checkForUpdatesAndNotify()
+  }, CHECK_UPDATES_DELAY_MS)
+}
+
 async function runAutoSyncIfDue() {
   if (autoSyncRunning) return
   const { dashboardDb, moodleService, studentsService } = ensureServices()
@@ -358,6 +391,7 @@ app.whenReady().then(() => {
     void runAutoSyncIfDue()
   }, AUTO_SYNC_CHECK_MS)
   createWindow()
+  setupAutoUpdater()
 }).catch((error) => {
   console.error('[main] app init failed:', error)
 })

@@ -92,6 +92,12 @@ interface Window {
         fileSubmissionEnabled: boolean
         maxFileSubmissions: number
         allowedFileTypes: string
+        introAttachments: Array<{
+          filename: string
+          filesize: number
+          fileurl: string
+          mimetype: string
+        }>
       }
       status: {
         status: string
@@ -110,6 +116,12 @@ interface Window {
       fileSubmissionEnabled: boolean
       maxFileSubmissions: number
       allowedFileTypes: string
+      introAttachments: Array<{
+        filename: string
+        filesize: number
+        fileurl: string
+        mimetype: string
+      }>
     }>
     moodleAssignmentSubmissionStatus: (payload: { assignId: number; username?: string }) => Promise<{
       status: string

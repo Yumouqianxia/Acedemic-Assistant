@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Back, Delete, Document, Refresh, Upload } from '@element-plus/icons-vue'
+import { ArrowRight, Back, Delete, Document, Download, Refresh, Upload } from '@element-plus/icons-vue'
 import { useSubmission } from '../composables/useSubmission'
 import { useTimeline } from '../composables/useTimeline'
 import { formatBytes } from '../composables/useUtils'
@@ -24,6 +24,32 @@ const {
 } = useSubmission()
 
 const { shortCourseName } = useTimeline()
+
+const getAttExt = (filename: string) => {
+  const parts = filename.split('.')
+  return parts.length > 1 ? parts[parts.length - 1].toUpperCase() : 'FILE'
+}
+
+const getAttExtColor = (filename: string) => {
+  const ext = getAttExt(filename)
+  const map: Record<string, string> = {
+    PDF: '#e74c3c',
+    DOC: '#2980b9', DOCX: '#2980b9',
+    PPT: '#e67e22', PPTX: '#e67e22',
+    XLS: '#27ae60', XLSX: '#27ae60',
+    ZIP: '#8e44ad', RAR: '#8e44ad',
+  }
+  return map[ext] ?? '#555e6a'
+}
+
+const openAttachment = async (file: { filename: string; fileurl: string; mimetype: string }) => {
+  const isPdf = file.mimetype === 'application/pdf' || file.filename.toLowerCase().endsWith('.pdf')
+  if (isPdf) {
+    await window.electronAPI.openPdfViewer({ url: file.fileurl, title: file.filename })
+  } else {
+    window.open(file.fileurl, '_blank')
+  }
+}
 </script>
 
 <template>
@@ -77,6 +103,30 @@ const { shortCourseName } = useTimeline()
       <div v-if="submissionAssignment.intro" class="sub-section">
         <div class="sub-section-title">Assignment Description</div>
         <div class="sub-intro" v-html="submissionAssignment.intro" />
+      </div>
+
+      <div v-if="submissionAssignment.introAttachments?.length" class="sub-section">
+        <div class="sub-section-title">
+          <el-icon><Download /></el-icon>
+          Assignment Files
+        </div>
+        <div class="sub-file-list">
+          <div
+            v-for="file in submissionAssignment.introAttachments"
+            :key="file.fileurl"
+            class="sub-attachment-file"
+            @click="openAttachment(file)"
+          >
+            <div class="sub-att-ext" :style="{ background: getAttExtColor(file.filename) }">
+              {{ getAttExt(file.filename) }}
+            </div>
+            <div class="sub-att-info">
+              <span class="sub-file-name">{{ file.filename }}</span>
+              <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+            </div>
+            <el-icon class="sub-att-action"><Download /></el-icon>
+          </div>
+        </div>
       </div>
 
       <div v-if="submissionStatus?.submittedFiles.length" class="sub-section">
@@ -343,6 +393,55 @@ const { shortCourseName } = useTimeline()
   font-size: 12px;
   color: var(--text-f);
   flex-shrink: 0;
+}
+
+.sub-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-surface-hover);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.sub-attachment-file:hover {
+  background: var(--tl-hover-bg);
+  border-color: var(--accent-b);
+}
+
+.sub-att-ext {
+  min-width: 38px;
+  height: 28px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.sub-att-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sub-att-action {
+  font-size: 16px;
+  color: var(--text-i);
+  flex-shrink: 0;
+}
+
+.sub-attachment-file:hover .sub-att-action {
+  color: var(--accent-b);
 }
 
 .sub-dropzone {

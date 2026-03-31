@@ -23,6 +23,16 @@ const ICONSET_MAP = [
   ['icon_512x512@2x.png', 1024],
 ]
 
+function makeRoundedMask(size, radiusRatio = 0.225) {
+  const radius = Math.round(size * radiusRatio)
+  const svg = `
+    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="${size}" height="${size}" rx="${radius}" ry="${radius}" fill="white" />
+    </svg>
+  `
+  return Buffer.from(svg)
+}
+
 async function ensureFileExists(file) {
   try {
     await fs.access(file)
@@ -44,8 +54,10 @@ async function main() {
   await fs.mkdir(ICONSET_DIR, { recursive: true })
 
   for (const [fileName, size] of ICONSET_MAP) {
+    const roundedMask = makeRoundedMask(size)
     await sharp(SOURCE_1024)
       .resize(size, size, { fit: 'cover' })
+      .composite([{ input: roundedMask, blend: 'dest-in' }])
       .png()
       .toFile(path.join(ICONSET_DIR, fileName))
   }

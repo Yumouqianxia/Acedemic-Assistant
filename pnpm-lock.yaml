@@ -17,6 +17,9 @@ importers:
       better-sqlite3:
         specifier: ^12.8.0
         version: 12.8.0
+      bindings:
+        specifier: ^1.5.0
+        version: 1.5.0
       electron-store:
         specifier: ^11.0.2
         version: 11.0.2
@@ -26,6 +29,9 @@ importers:
       element-plus:
         specifier: ^2.13.5
         version: 2.13.5(typescript@5.9.3)(vue@3.5.30(typescript@5.9.3))
+      file-uri-to-path:
+        specifier: ^1.0.0
+        version: 1.0.0
       vue:
         specifier: ^3.4.21
         version: 3.5.30(typescript@5.9.3)

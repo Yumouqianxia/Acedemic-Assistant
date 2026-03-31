@@ -85,39 +85,51 @@ function createWindow() {
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle('ipc-test:ping', (_event, payload: string) => {
+  const handle = <T extends any[]>(
+    channel: string,
+    listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown | Promise<unknown>,
+  ) => {
+    ipcMain.removeHandler(channel)
+    ipcMain.handle(channel, listener)
+  }
+
+  handle('ipc-test:ping', (_event, payload: string) => {
     return `pong from main: ${payload} @ ${new Date().toLocaleString()}`
   })
 
-  ipcMain.handle('moodle:login', (_event, payload: { username: string; password: string; rememberPassword?: boolean }) => {
+  handle('moodle:login', (_event, payload: { username: string; password: string; rememberPassword?: boolean }) => {
     return ensureServices().moodleService.login(payload)
   })
-  ipcMain.handle('moodle:sync', (_event, payload?: { username?: string }) => {
+  handle('moodle:sync', (_event, payload?: { username?: string }) => {
     return ensureServices().moodleService.sync(payload)
   })
-  ipcMain.handle('moodle:course:contents', (_event, payload: { courseId: number; username?: string }) => {
+  handle('moodle:course:contents', (_event, payload: { courseId: number; username?: string }) => {
     return ensureServices().moodleService.courseContents(payload)
   })
-  ipcMain.handle('moodle:profiles:list', () => ensureServices().moodleService.profilesList())
-  ipcMain.handle('moodle:profile:remove', (_event, payload: { username: string }) => {
+  handle('moodle:profiles:list', () => ensureServices().moodleService.profilesList())
+  handle('moodle:profile:remove', (_event, payload: { username: string }) => {
     return ensureServices().moodleService.profileRemove(payload)
   })
-  ipcMain.handle('moodle:credential:get', (_event, payload: { username: string }) => {
+  handle('moodle:credential:get', (_event, payload: { username: string }) => {
     return ensureServices().moodleService.credentialGet(payload)
   })
-  ipcMain.handle('moodle:logout', (_event, payload?: { username?: string }) => {
+  handle('moodle:logout', (_event, payload?: { username?: string }) => {
     return ensureServices().moodleService.logout(payload)
   })
-  ipcMain.handle('moodle:sso-login', () => {
+  handle('moodle:sso-login', () => {
+    return ensureServices().moodleService.loginViaSso(() => win)
+  })
+  // Compatibility alias for older/newer renderer bundles.
+  handle('moodle:ssoLogin', () => {
     return ensureServices().moodleService.loginViaSso(() => win)
   })
 
-  ipcMain.handle('students:authenticate', () => ensureServices().studentsService.authenticate())
-  ipcMain.handle('students:sync', () => ensureServices().studentsService.sync())
-  ipcMain.handle('students:session:clear', () => ensureServices().studentsService.clearSession())
+  handle('students:authenticate', () => ensureServices().studentsService.authenticate())
+  handle('students:sync', () => ensureServices().studentsService.sync())
+  handle('students:session:clear', () => ensureServices().studentsService.clearSession())
 
-  ipcMain.handle('dashboard:get', () => ensureServices().dashboardDb.getDashboardSnapshot())
-  ipcMain.handle('dashboard:sync-all', async (_event, payload?: { username?: string; trigger?: 'manual' | 'login' | 'auto' }) => {
+  handle('dashboard:get', () => ensureServices().dashboardDb.getDashboardSnapshot())
+  handle('dashboard:sync-all', async (_event, payload?: { username?: string; trigger?: 'manual' | 'login' | 'auto' }) => {
     const trace = syncTag()
     const startedAt = now()
     const trigger = payload?.trigger ?? 'manual'
@@ -238,27 +250,27 @@ function registerIpcHandlers() {
   })
 
   // ── Moodle Timeline & Submission ──────────────────────────────────────────
-  ipcMain.handle('moodle:timeline', (_event, payload?: { username?: string; daysAhead?: number }) => {
+  handle('moodle:timeline', (_event, payload?: { username?: string; daysAhead?: number }) => {
     return ensureServices().moodleService.getTimeline(payload)
   })
-  ipcMain.handle('moodle:assignment:detail', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
+  handle('moodle:assignment:detail', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
     return ensureServices().moodleService.getAssignmentDetail(payload)
   })
-  ipcMain.handle('moodle:assignment:detail-with-status', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
+  handle('moodle:assignment:detail-with-status', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
     return ensureServices().moodleService.getAssignmentWithStatus(payload)
   })
-  ipcMain.handle('moodle:assignment:submission-status', (_event, payload: { assignId: number; username?: string }) => {
+  handle('moodle:assignment:submission-status', (_event, payload: { assignId: number; username?: string }) => {
     return ensureServices().moodleService.getSubmissionStatus(payload)
   })
-  ipcMain.handle('moodle:assignment:upload-file', (_event, payload: { filePath: string; username?: string }) => {
+  handle('moodle:assignment:upload-file', (_event, payload: { filePath: string; username?: string }) => {
     return ensureServices().moodleService.uploadFile(payload)
   })
-  ipcMain.handle('moodle:assignment:save-submission', (_event, payload: { assignId: number; draftItemId: number; username?: string }) => {
+  handle('moodle:assignment:save-submission', (_event, payload: { assignId: number; draftItemId: number; username?: string }) => {
     return ensureServices().moodleService.saveSubmission(payload)
   })
 
   // ── PDF / file viewer ─────────────────────────────────────────────────────
-  ipcMain.handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {
+  handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {
     const pdfWin = new BrowserWindow({
       width: 1100,
       height: 820,
@@ -273,7 +285,7 @@ function registerIpcHandlers() {
   })
 
   // ── File dialog ───────────────────────────────────────────────────────────
-  ipcMain.handle('dialog:open-file', async (_event, options?: Electron.OpenDialogOptions) => {
+  handle('dialog:open-file', async (_event, options?: Electron.OpenDialogOptions) => {
     if (!win) return { canceled: true, filePaths: [] }
     return dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'],
@@ -282,13 +294,13 @@ function registerIpcHandlers() {
   })
 
   // Window controls
-  ipcMain.handle('window:minimize', () => win?.minimize())
-  ipcMain.handle('window:maximize', () => {
+  handle('window:minimize', () => win?.minimize())
+  handle('window:maximize', () => {
     if (win?.isMaximized()) win?.unmaximize()
     else win?.maximize()
   })
-  ipcMain.handle('window:close', () => win?.close())
-  ipcMain.handle('window:is-maximized', () => win?.isMaximized() ?? false)
+  handle('window:close', () => win?.close())
+  handle('window:is-maximized', () => win?.isMaximized() ?? false)
 }
 
 function setupAutoUpdater() {

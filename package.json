@@ -6,14 +6,15 @@
   "scripts": {
     "dev": "vite",
     "clean": "node scripts/clean.mjs",
-    "build": "pnpm clean && vue-tsc && vite build && electron-builder",
-    "release": "pnpm clean && vue-tsc && vite build && electron-builder --publish always",
-    "release:win": "pnpm clean && pnpm icons:build && vue-tsc && vite build && electron-builder --win --publish always",
-    "release:mac": "pnpm clean && pnpm icons:build && pnpm icons:mac && vue-tsc && vite build && electron-builder --mac --publish always",
+    "rebuild:native": "electron-builder install-app-deps",
+    "build": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder",
+    "release": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder --publish always",
+    "release:win": "pnpm clean && pnpm rebuild:native && pnpm icons:build && vue-tsc && vite build && electron-builder --win --publish always",
+    "release:mac": "pnpm clean && pnpm rebuild:native && pnpm icons:build && pnpm icons:mac && vue-tsc && vite build && electron-builder --mac --publish always",
     "icons:build": "node scripts/build-icons.mjs",
     "icons:mac": "node scripts/build-icons-mac.mjs",
     "preview": "vite preview",
-    "postinstall": "electron-rebuild"
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

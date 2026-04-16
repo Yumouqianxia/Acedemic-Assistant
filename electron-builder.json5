@@ -16,7 +16,8 @@
   ],
   "files": [
     "dist",
-    "dist-electron"
+    "dist-electron/**",
+    "!dist-electron/main.js"
   ],
   "mac": {
     "icon": "build/icons/icon.icns",

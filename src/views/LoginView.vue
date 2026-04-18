@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ArrowRight, Lock, Message } from '@element-plus/icons-vue'
 import { useAuth } from '../composables/useAuth'
-import { notifyWarning } from '../composables/useUtils'
 
 const emit = defineEmits<{
   login: []
@@ -16,9 +15,6 @@ const {
   handlePickProfile,
 } = useAuth()
 
-const handleSsoNotAvailable = () => {
-  notifyWarning('该功能暂未开放，请使用账号密码登录', '提示')
-}
 </script>
 
 <template>
@@ -84,8 +80,6 @@ const handleSsoNotAvailable = () => {
           Sign In & Access Dashboard
         </el-button>
 
-        <div class="login-hint-text">登录后进入统一课程面板（Moodle + Students 合并）</div>
-
         <div class="login-sso-divider">
           <span>Or sign in with:</span>
         </div>
@@ -98,10 +92,7 @@ const handleSsoNotAvailable = () => {
               <span class="ms-sq ms-sq-b" />
               <span class="ms-sq ms-sq-y" />
             </span>
-            GT-IIT SSO (Microsoft)
-          </button>
-          <button class="login-sso-btn" type="button" @click="handleSsoNotAvailable">
-            Alternative School Login
+            GTIIT SSO (Microsoft)
           </button>
         </div>
       </div>

@@ -103,7 +103,7 @@ type MoodleSubmissionPlugin = {
   name: string
   fileareas?: Array<{
     area: string
-    files: Array<{ filename: string; filesize: number; fileurl: string }>
+    files: Array<{ filename: string; filesize: number; fileurl: string; mimetype?: string }>
   }>
 }
 
@@ -123,6 +123,25 @@ type MoodleSubmissionStatusRaw = {
     cansubmit: boolean
     caneditsettings: boolean
   }
+  feedback?: {
+    grade?: {
+      id?: number
+      grade?: number | string
+      grader?: number
+      timemodified?: number
+    }
+    gradefordisplay?: string
+    gradeddate?: number
+    plugins?: MoodleSubmissionPlugin[]
+  }
+}
+
+type MoodleUserByField = {
+  id: number
+  fullname?: string
+  firstname?: string
+  lastname?: string
+  email?: string
 }
 
 export type TimelineEvent = {
@@ -162,6 +181,10 @@ export type SubmissionStatus = {
   canSubmit: boolean
   canEdit: boolean
   submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+  gradeText: string | null
+  gradedAt: number | null
+  grader: { id: number; fullName: string; email: string | null } | null
+  feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
 }
 
 export type UploadedFile = {
@@ -181,6 +204,8 @@ export class MoodleService {
   private activeUsername: string | null = null
   /** In-memory cache: cmid → AssignmentDetail (cleared on logout) */
   private assignmentCache = new Map<number, AssignmentDetail>()
+  /** In-memory cache: grader user id → profile */
+  private graderProfileCache = new Map<number, { id: number; fullName: string; email: string | null }>()
 
   constructor(private readonly db: DashboardDb) {
     this.appStore = new Store<PersistedState>({
@@ -216,6 +241,55 @@ export class MoodleService {
   private withToken(fileUrl: string, token: string) {
     if (!fileUrl) return ''
     return fileUrl.includes('?') ? `${fileUrl}&token=${token}` : `${fileUrl}?token=${token}`
+  }
+
+  private normalizeHtmlText(value?: string | null) {
+    if (!value) return ''
+    return value
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;|&#160;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, '\'')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private async resolveGraderProfile(graderId: number | undefined, token: string) {
+    if (typeof graderId !== 'number' || !Number.isFinite(graderId) || graderId <= 0) {
+      return null
+    }
+    const cached = this.graderProfileCache.get(graderId)
+    if (cached) return cached
+    try {
+      const users = await this.callMoodleWs<MoodleUserByField[]>(
+        'core_user_get_users_by_field',
+        token,
+        {
+          field: 'id',
+          'values[0]': graderId,
+        },
+      )
+      const user = users?.[0]
+      const fallbackName = `User #${graderId}`
+      const fullName = this.normalizeHtmlText(
+        user?.fullname
+        || `${user?.firstname ?? ''} ${user?.lastname ?? ''}`.trim()
+        || fallbackName,
+      ) || fallbackName
+      const normalizedEmail = this.normalizeHtmlText(user?.email)
+      const email = normalizedEmail && normalizedEmail.includes('@') ? normalizedEmail : null
+      const profile = { id: graderId, fullName, email }
+      this.graderProfileCache.set(graderId, profile)
+      return profile
+    } catch {
+      const fallback = { id: graderId, fullName: `User #${graderId}`, email: null }
+      this.graderProfileCache.set(graderId, fallback)
+      return fallback
+    }
   }
 
   private async requestMoodleToken(username: string, password: string) {
@@ -431,11 +505,11 @@ export class MoodleService {
     const win = new BrowserWindow({
       width: 1100,
       height: 760,
-      title: 'GT-IIT Campus Dashboard — SSO 登录',
+      title: 'GTIIT Campus Dashboard — SSO 登录',
       modal: Boolean(parent),
       parent,
       autoHideMenuBar: true,
-      show: true,
+      show: false,
       webPreferences: {
         // Share the same partition as Students so Office 365 session is reused
         partition: PARTITION,
@@ -448,11 +522,133 @@ export class MoodleService {
       let done = false
       let moodleLoginDetected = false
       let launchNavigated = false
+      let office365AutoClicked = false
+      let ssoWindowShown = false
+      let interactiveMode = false
       let launchTimeoutId: ReturnType<typeof setTimeout> | null = null
+      let office365RetryTimer: ReturnType<typeof setInterval> | null = null
+      let revealFallbackTimer: ReturnType<typeof setTimeout> | null = null
+      let silentFallbackTimer: ReturnType<typeof setTimeout> | null = null
+      let office365RetryCount = 0
       let globalTimer: ReturnType<typeof setTimeout>
+      const OFFICE365_RETRY_MAX = 25
+      const SILENT_TIMEOUT_MS = 8000
 
       const unregisterProtocol = () => {
         try { ses.protocol.unregisterProtocol('moodlemobile') } catch { /* already removed */ }
+      }
+
+      const clearOffice365Retry = () => {
+        if (office365RetryTimer) {
+          clearInterval(office365RetryTimer)
+          office365RetryTimer = null
+        }
+      }
+
+      const clearRevealFallback = () => {
+        if (revealFallbackTimer) {
+          clearTimeout(revealFallbackTimer)
+          revealFallbackTimer = null
+        }
+      }
+
+      const clearSilentFallback = () => {
+        if (silentFallbackTimer) {
+          clearTimeout(silentFallbackTimer)
+          silentFallbackTimer = null
+        }
+      }
+
+      const showSsoWindow = () => {
+        if (ssoWindowShown || done || win.isDestroyed()) return
+        ssoWindowShown = true
+        win.show()
+      }
+
+      const tryAutoClickOffice365 = async () => {
+        if (done || win.isDestroyed()) return false
+        const pageUrl = win.webContents.getURL()
+        const onMoodleLoginPage = pageUrl.includes('moodle.gtiit.edu.cn/moodle') && pageUrl.includes('/login/')
+        if (!onMoodleLoginPage) return false
+        try {
+          const result = await win.webContents.executeJavaScript(`(() => {
+            const norm = (v) => String(v || '').toLowerCase()
+            const hasMicrosoftHint = (el) => {
+              const text = norm(el?.innerText || el?.textContent || el?.value)
+              const href = norm(el?.getAttribute?.('href'))
+              return text.includes('office 365')
+                || text.includes('office365')
+                || text.includes('microsoft')
+                || href.includes('office365')
+                || href.includes('microsoft')
+                || href.includes('auth_oidc')
+                || href.includes('oauth2')
+                || href.includes('saml2')
+            }
+            const nodes = Array.from(document.querySelectorAll('a, button, input[type="submit"], input[type="button"]'))
+            const target = nodes.find((el) => hasMicrosoftHint(el))
+            if (!target) return { clicked: false }
+            try {
+              target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+            } catch {}
+            if (typeof target.click === 'function') target.click()
+            return {
+              clicked: true,
+              text: String(target?.innerText || target?.textContent || target?.value || '').trim().slice(0, 80),
+              href: String(target?.getAttribute?.('href') || '').slice(0, 200),
+            }
+          })()`, true)
+          if (result?.clicked) {
+            office365AutoClicked = true
+            clearOffice365Retry()
+            console.info('[moodle:sso] auto-clicked Office 365 login button', result)
+            return true
+          }
+        } catch (error) {
+          console.warn('[moodle:sso] auto-click Office 365 failed', error)
+        }
+        return false
+      }
+
+      const startOffice365Retry = () => {
+        if (office365RetryTimer || done || win.isDestroyed()) return
+        office365RetryCount = 0
+        office365RetryTimer = setInterval(() => {
+          if (done || win.isDestroyed()) {
+            clearOffice365Retry()
+            return
+          }
+          const currentUrl = win.webContents.getURL()
+          const onMoodleLoginPage = currentUrl.includes('moodle.gtiit.edu.cn/moodle') && currentUrl.includes('/login/')
+          if (!onMoodleLoginPage) {
+            clearOffice365Retry()
+            return
+          }
+          if (office365RetryCount >= OFFICE365_RETRY_MAX) {
+            clearOffice365Retry()
+            console.warn('[moodle:sso] auto-click Office 365 timed out, waiting for manual click')
+            if (interactiveMode) showSsoWindow()
+            return
+          }
+          office365RetryCount += 1
+          void tryAutoClickOffice365()
+        }, 900)
+      }
+
+      const enterInteractiveFlow = (reason: string) => {
+        if (done || win.isDestroyed() || interactiveMode) return
+        interactiveMode = true
+        moodleLoginDetected = false
+        launchNavigated = false
+        office365AutoClicked = false
+        clearSilentFallback()
+        clearRevealFallback()
+        clearOffice365Retry()
+        console.info('[moodle:sso] switching to interactive mode:', reason)
+        win.webContents.loadURL(MOODLE_LOGIN_URL).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (!msg.includes('ERR_ABORTED')) finish(new Error(msg))
+        })
       }
 
       const finish = (value: { username: string; fullName: string; siteName: string; userId: number } | Error) => {
@@ -460,6 +656,9 @@ export class MoodleService {
         done = true
         clearTimeout(globalTimer)
         if (launchTimeoutId) clearTimeout(launchTimeoutId)
+        clearOffice365Retry()
+        clearRevealFallback()
+        clearSilentFallback()
         unregisterProtocol()
         if (!win.isDestroyed()) win.close()
         if (value instanceof Error) reject(value)
@@ -556,14 +755,58 @@ export class MoodleService {
 
         if (onMoodle && !onLoginPage && !onMSAuth && !moodleLoginDetected) {
           moodleLoginDetected = true
+          clearOffice365Retry()
+          clearRevealFallback()
+          clearSilentFallback()
           // Wait for the page to settle, then trigger token extraction
           setTimeout(navigateToLaunch, 1500)
+        }
+        if (onLoginPage && !onMSAuth && !office365AutoClicked) {
+          void tryAutoClickOffice365()
+          startOffice365Retry()
+          if (interactiveMode && !revealFallbackTimer) {
+            revealFallbackTimer = setTimeout(() => {
+              const currentUrl = win.isDestroyed() ? '' : win.webContents.getURL()
+              const stillOnLogin = currentUrl.includes('moodle.gtiit.edu.cn/moodle') && currentUrl.includes('/login/')
+              if (stillOnLogin && !office365AutoClicked) showSsoWindow()
+            }, 2200)
+          }
+        }
+        if (onMSAuth) {
+          clearOffice365Retry()
+          clearRevealFallback()
+          if (interactiveMode) showSsoWindow()
+        }
+      })
+
+      win.webContents.on('did-finish-load', () => {
+        if (done || win.isDestroyed() || office365AutoClicked) return
+        const currentUrl = win.webContents.getURL()
+        const onMoodleLoginPage = currentUrl.includes('moodle.gtiit.edu.cn/moodle') && currentUrl.includes('/login/')
+        if (onMoodleLoginPage) {
+          void tryAutoClickOffice365()
+          startOffice365Retry()
+          if (interactiveMode && !revealFallbackTimer) {
+            revealFallbackTimer = setTimeout(() => {
+              const latestUrl = win.isDestroyed() ? '' : win.webContents.getURL()
+              const stillOnLogin = latestUrl.includes('moodle.gtiit.edu.cn/moodle') && latestUrl.includes('/login/')
+              if (stillOnLogin && !office365AutoClicked) showSsoWindow()
+            }, 2200)
+          }
         }
       })
 
       win.on('closed', () => { if (!done) finish(new Error('SSO 窗口已关闭')) })
 
-      win.loadURL(MOODLE_LOGIN_URL).catch((err: unknown) => {
+      // Phase 1: silent mode (hidden window) — try to fetch token directly
+      // using existing Office365 session. Most returning users finish here
+      // with zero visible popup.
+      silentFallbackTimer = setTimeout(() => {
+        if (!done) {
+          enterInteractiveFlow('silent timeout')
+        }
+      }, SILENT_TIMEOUT_MS)
+      win.loadURL(LAUNCH_URL).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err)
         if (!msg.includes('ERR_ABORTED')) finish(new Error(msg))
       })
@@ -656,11 +899,41 @@ export class MoodleService {
     return this.parseSubmissionStatus(data, session.token)
   }
 
-  private parseSubmissionStatus(data: MoodleSubmissionStatusRaw, token: string): SubmissionStatus {
+  private async parseSubmissionStatus(data: MoodleSubmissionStatusRaw, token: string): Promise<SubmissionStatus> {
     const attempt = data.lastattempt
     const submission = attempt?.submission
     const filePlugin = submission?.plugins?.find((p) => p.type === 'file')
     const submissionFiles = filePlugin?.fileareas?.find((a) => a.area === 'submission_files')?.files ?? []
+    const feedback = data.feedback
+    // Moodle instances may expose feedback attachments under different filearea names
+    // (e.g. feedback_files, files) depending on plugin/configuration.
+    const feedbackFilesRaw = (feedback?.plugins ?? [])
+      .flatMap((plugin) => (plugin.fileareas ?? [])
+        .flatMap((fileArea) => (fileArea.files ?? []).map((file) => ({
+          ...file,
+          area: fileArea.area,
+          pluginType: plugin.type,
+        }))))
+      .filter((file) => Boolean(file.fileurl))
+    const seenFeedbackFileKeys = new Set<string>()
+    const feedbackFiles = feedbackFilesRaw.filter((file) => {
+      const key = `${file.pluginType}:${file.area}:${file.fileurl}`
+      if (seenFeedbackFileKeys.has(key)) return false
+      seenFeedbackFileKeys.add(key)
+      return true
+    })
+    const rawGradeDisplay = this.normalizeHtmlText(feedback?.gradefordisplay)
+    const rawGrade = feedback?.grade?.grade
+    const normalizedGrade = rawGradeDisplay
+      || (typeof rawGrade === 'string'
+        ? this.normalizeHtmlText(rawGrade)
+        : (typeof rawGrade === 'number' && Number.isFinite(rawGrade) ? String(rawGrade) : ''))
+    const gradeText = normalizedGrade && normalizedGrade !== '-' ? normalizedGrade : null
+    const gradedAt = (typeof feedback?.gradeddate === 'number' && Number.isFinite(feedback.gradeddate) ? feedback.gradeddate : null)
+      ?? (typeof feedback?.grade?.timemodified === 'number' && Number.isFinite(feedback.grade.timemodified)
+        ? feedback.grade.timemodified
+        : null)
+    const grader = await this.resolveGraderProfile(feedback?.grade?.grader, token)
     const canSubmit =
       attempt?.cansubmit ??
       data.gradingsummary?.cansubmit ??
@@ -673,6 +946,15 @@ export class MoodleService {
         filename: f.filename,
         filesize: f.filesize,
         fileurl: this.withToken(f.fileurl, token),
+      })),
+      gradeText,
+      gradedAt,
+      grader,
+      feedbackFiles: feedbackFiles.map((f) => ({
+        filename: f.filename,
+        filesize: f.filesize,
+        fileurl: this.withToken(f.fileurl, token),
+        mimetype: f.mimetype ?? '',
       })),
     }
   }
@@ -696,7 +978,7 @@ export class MoodleService {
       const statusData = await this.callMoodleWs<MoodleSubmissionStatusRaw>(
         'mod_assign_get_submission_status', sess.token, { assignid: cached.id },
       )
-      return { detail: cached, status: this.parseSubmissionStatus(statusData, sess.token) }
+      return { detail: cached, status: await this.parseSubmissionStatus(statusData, sess.token) }
     }
 
     // Cache miss: resolve real assignId from cmid, then fetch detail + status in parallel
@@ -741,7 +1023,7 @@ export class MoodleService {
     }
     this.assignmentCache.set(payload.cmid, detail)
 
-    return { detail, status: this.parseSubmissionStatus(statusData, sess.token) }
+    return { detail, status: await this.parseSubmissionStatus(statusData, sess.token) }
   }
 
   async uploadFile(payload: { filePath: string; username?: string }): Promise<UploadedFile> {
@@ -935,6 +1217,7 @@ export class MoodleService {
       if (this.activeUsername === username) this.activeUsername = null
     }
     this.assignmentCache.clear()
+    this.graderProfileCache.clear()
     return true
   }
 }

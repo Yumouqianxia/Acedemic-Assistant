@@ -131,6 +131,10 @@ const electronAPI = {
         canSubmit: boolean
         canEdit: boolean
         submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+        gradeText: string | null
+        gradedAt: number | null
+        grader: { id: number; fullName: string; email: string | null } | null
+        feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
       }
     }>
   },
@@ -159,6 +163,10 @@ const electronAPI = {
       canSubmit: boolean
       canEdit: boolean
       submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+      gradeText: string | null
+      gradedAt: number | null
+      grader: { id: number; fullName: string; email: string | null } | null
+      feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
     }>
   },
   moodleAssignmentUploadFile(payload: { filePath: string; username?: string }) {
@@ -173,6 +181,9 @@ const electronAPI = {
   },
   openPdfViewer(payload: { url: string; title?: string }) {
     return ipcRenderer.invoke('file:open-pdf', payload) as Promise<boolean>
+  },
+  downloadAndOpenFile(payload: { url: string; filename?: string }) {
+    return ipcRenderer.invoke('file:download-open', payload) as Promise<{ filePath: string }>
   },
   dialogOpenFile(options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) {
     return ipcRenderer.invoke('dialog:open-file', options) as Promise<{

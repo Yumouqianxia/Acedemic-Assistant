@@ -4,6 +4,12 @@ import { useSubmission } from '../composables/useSubmission'
 import { useTimeline } from '../composables/useTimeline'
 import { formatBytes } from '../composables/useUtils'
 
+const props = withDefaults(defineProps<{
+  backTarget?: 'course' | 'dashboard'
+}>(), {
+  backTarget: 'dashboard',
+})
+
 defineEmits<{
   back: []
 }>()
@@ -42,14 +48,58 @@ const getAttExtColor = (filename: string) => {
   return map[ext] ?? '#555e6a'
 }
 
-const openAttachment = async (file: { filename: string; fileurl: string; mimetype: string }) => {
+const isForceDownloadUrl = (url: string) => /[?&]forcedownload=1(?:&|$)/i.test(url)
+
+const withForcedownload = (url: string, value: '0' | '1') => {
+  try {
+    const u = new URL(url)
+    u.searchParams.set('forcedownload', value)
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+
+const openAttachment = async (file: { filename: string; fileurl: string; mimetype?: string }) => {
   const isPdf = file.mimetype === 'application/pdf' || file.filename.toLowerCase().endsWith('.pdf')
+  const forceDownload = isForceDownloadUrl(file.fileurl)
+  if (forceDownload) {
+    await window.electronAPI.downloadAndOpenFile({
+      url: file.fileurl,
+      filename: file.filename,
+    })
+    return
+  }
   if (isPdf) {
-    await window.electronAPI.openPdfViewer({ url: file.fileurl, title: file.filename })
+    try {
+      await window.electronAPI.openPdfViewer({
+        url: withForcedownload(file.fileurl, '0'),
+        title: file.filename,
+      })
+    } catch {
+      await window.electronAPI.downloadAndOpenFile({
+        url: withForcedownload(file.fileurl, '1'),
+        filename: file.filename,
+      })
+    }
   } else {
     window.open(file.fileurl, '_blank')
   }
 }
+
+const formatGradedAt = (timestamp: number | null) => {
+  if (!timestamp) return '评分时间未知'
+  return new Date(timestamp * 1000).toLocaleString('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const backButtonText = computed(() => (props.backTarget === 'course' ? 'Back to Course' : 'Back to Dashboard'))
 </script>
 
 <template>
@@ -57,7 +107,7 @@ const openAttachment = async (file: { filename: string; fileurl: string; mimetyp
     <div class="sub-topbar">
       <button class="sub-back-btn" @click="$emit('back')">
         <el-icon><Back /></el-icon>
-        Back to Dashboard
+        {{ backButtonText }}
       </button>
       <span class="sub-breadcrumb">
         {{ shortCourseName(submissionEvent?.coursename ?? '') }}
@@ -139,6 +189,48 @@ const openAttachment = async (file: { filename: string; fileurl: string; mimetyp
             <el-icon class="sub-file-icon"><Document /></el-icon>
             <span class="sub-file-name">{{ file.filename }}</span>
             <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="submissionStatus?.gradeText || submissionStatus?.feedbackFiles.length"
+        class="sub-section"
+      >
+        <div class="sub-section-title">
+          <el-icon><Document /></el-icon>
+          Grading Feedback
+        </div>
+        <div v-if="submissionStatus?.gradeText" class="sub-feedback-grade">
+          <div class="sub-feedback-label">Score</div>
+          <div class="sub-feedback-value">{{ submissionStatus.gradeText }}</div>
+          <div v-if="submissionStatus.grader" class="sub-feedback-grader">
+            Graded by: <strong>{{ submissionStatus.grader.fullName }}</strong>
+            <a
+              v-if="submissionStatus.grader.email"
+              class="sub-feedback-mail-link"
+              :href="`mailto:${submissionStatus.grader.email}`"
+            >
+              {{ submissionStatus.grader.email }}
+            </a>
+          </div>
+          <div class="sub-feedback-time">{{ formatGradedAt(submissionStatus.gradedAt) }}</div>
+        </div>
+        <div v-if="submissionStatus?.feedbackFiles.length" class="sub-file-list">
+          <div
+            v-for="file in submissionStatus.feedbackFiles"
+            :key="file.fileurl"
+            class="sub-attachment-file"
+            @click="openAttachment(file)"
+          >
+            <div class="sub-att-ext" :style="{ background: getAttExtColor(file.filename) }">
+              {{ getAttExt(file.filename) }}
+            </div>
+            <div class="sub-att-info">
+              <span class="sub-file-name">{{ file.filename }}</span>
+              <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+            </div>
+            <el-icon class="sub-att-action"><Download /></el-icon>
           </div>
         </div>
       </div>
@@ -364,6 +456,56 @@ const openAttachment = async (file: { filename: string; fileurl: string; mimetyp
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.sub-feedback-grade {
+  border: 1px solid var(--border);
+  background: var(--bg-surface-hover);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.sub-feedback-label {
+  font-size: 12px;
+  color: var(--text-f);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.sub-feedback-value {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--text-h);
+  margin-top: 2px;
+}
+
+.sub-feedback-time {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-m);
+}
+
+.sub-feedback-grader {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-b);
+}
+
+.sub-feedback-mail-link {
+  font-size: 12px;
+  color: var(--accent-b);
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+}
+
+.sub-feedback-mail-link:hover {
+  opacity: 0.75;
 }
 
 .sub-submitted-file {

@@ -17,6 +17,7 @@ import CourseDetailView from './views/CourseDetailView.vue'
 
 const router = useRouter()
 const appStage = ref<'login' | 'dashboard' | 'submission' | 'courseDetail'>('login')
+const submissionBackTarget = ref<'dashboard' | 'course'>('dashboard')
 
 const { user, loginForm, rememberPassword, loggingIn, loadProfiles, saveSession, restoreSession, clearSession } = useAuth()
 const { moodleSyncing, studentsSyncing, selectedCourse, selectedSections, loadingSections, selectedCourseExams, loadDashboard, loadCourseContents, clearDashboard } = useDashboard()
@@ -103,6 +104,7 @@ const handleLogout = async () => {
   clearDashboard()
   clearTimeline()
   clearSubmission()
+  submissionBackTarget.value = 'dashboard'
   appStage.value = 'login'
   notifySuccess('已退出当前账号', '退出成功')
 }
@@ -176,12 +178,13 @@ const handleOpenSubmission = async (event: TimelineEvent) => {
     void openSubmission(event)
     return
   }
+  submissionBackTarget.value = appStage.value === 'courseDetail' ? 'course' : 'dashboard'
   appStage.value = 'submission'
   void openSubmission(event)
 }
 
-const handleBackToDashboard = () => {
-  appStage.value = 'dashboard'
+const handleBackFromSubmission = () => {
+  appStage.value = submissionBackTarget.value === 'course' ? 'courseDetail' : 'dashboard'
   clearSubmission()
 }
 
@@ -242,7 +245,8 @@ onMounted(async () => {
 
   <SubmissionView
     v-if="appStage === 'submission'"
-    @back="handleBackToDashboard"
+    :back-target="submissionBackTarget"
+    @back="handleBackFromSubmission"
   />
 
 </div>

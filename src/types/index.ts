@@ -89,6 +89,10 @@ export type SubmissionStatus = {
   canSubmit: boolean
   canEdit: boolean
   submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+  gradeText: string | null
+  gradedAt: number | null
+  grader: { id: number; fullName: string; email: string | null } | null
+  feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
 }
 
 export type SelectedFile = {

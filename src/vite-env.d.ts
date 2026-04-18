@@ -104,6 +104,10 @@ interface Window {
         canSubmit: boolean
         canEdit: boolean
         submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+        gradeText: string | null
+        gradedAt: number | null
+        grader: { id: number; fullName: string; email: string | null } | null
+        feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
       }
     }>
     moodleAssignmentDetail: (payload: { cmid: number; courseId: number; username?: string }) => Promise<{
@@ -128,6 +132,10 @@ interface Window {
       canSubmit: boolean
       canEdit: boolean
       submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+      gradeText: string | null
+      gradedAt: number | null
+      grader: { id: number; fullName: string; email: string | null } | null
+      feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
     }>
     moodleAssignmentUploadFile: (payload: { filePath: string; username?: string }) => Promise<{
       itemid: number
@@ -136,6 +144,7 @@ interface Window {
     }>
     moodleAssignmentSaveSubmission: (payload: { assignId: number; draftItemId: number; username?: string }) => Promise<boolean>
     openPdfViewer: (payload: { url: string; title?: string }) => Promise<boolean>
+    downloadAndOpenFile: (payload: { url: string; filename?: string }) => Promise<{ filePath: string }>
     dialogOpenFile: (options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{
       canceled: boolean
       filePaths: string[]

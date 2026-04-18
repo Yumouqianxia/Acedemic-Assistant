@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { access, writeFile } from 'node:fs/promises'
 import { autoUpdater } from 'electron-updater'
 import { DashboardDb } from './dashboard-db'
 import { MoodleService } from './services/moodle-service'
@@ -31,6 +32,48 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const now = () => Date.now()
 const elapsed = (start: number) => `${Date.now() - start}ms`
 const syncTag = () => `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+const FILE_NAME_SAFE_RE = /[<>:"/\\|?*\u0000-\u001F]/g
+const FORCE_DOWNLOAD_RE = /[?&]forcedownload=1(?:&|$)/i
+
+function sanitizeFilename(name: string) {
+  return name.replace(FILE_NAME_SAFE_RE, '_').trim() || `download-${Date.now()}`
+}
+
+async function pickAvailablePath(dir: string, filename: string) {
+  const ext = path.extname(filename)
+  const base = path.basename(filename, ext)
+  let candidate = path.join(dir, filename)
+  let index = 1
+  while (true) {
+    try {
+      await access(candidate)
+      candidate = path.join(dir, `${base} (${index})${ext}`)
+      index += 1
+    } catch {
+      return candidate
+    }
+  }
+}
+
+function shouldDownloadDirectly(fileUrl: string) {
+  return FORCE_DOWNLOAD_RE.test(fileUrl)
+}
+
+async function downloadAndOpenRemoteFile(url: string, preferredFilename?: string) {
+  const response = await net.fetch(url, { method: 'GET' })
+  if (!response.ok) {
+    throw new Error(`下载失败 (HTTP ${response.status})`)
+  }
+  const rawName = preferredFilename?.trim() || path.basename(new URL(url).pathname) || `download-${Date.now()}`
+  const finalName = sanitizeFilename(rawName)
+  const downloadDir = app.getPath('downloads')
+  const outputPath = await pickAvailablePath(downloadDir, finalName)
+  const bytes = await response.arrayBuffer()
+  await writeFile(outputPath, Buffer.from(bytes))
+  const openError = await shell.openPath(outputPath)
+  if (openError) throw new Error(openError)
+  return { filePath: outputPath }
+}
 
 const isStudentsNotReadyError = (message: string) => {
   const msg = message.toLowerCase()
@@ -271,6 +314,28 @@ function registerIpcHandlers() {
 
   // ── PDF / file viewer ─────────────────────────────────────────────────────
   handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {
+    if (!payload?.url) throw new Error('文件链接为空')
+    if (shouldDownloadDirectly(payload.url)) {
+      await downloadAndOpenRemoteFile(payload.url, payload.title)
+      return true
+    }
+    // Some Moodle instances still respond with attachment content-disposition
+    // even when forcedownload is not explicit in the URL.
+    try {
+      const headResp = await net.fetch(payload.url, { method: 'HEAD' })
+      if (headResp.ok) {
+        const contentDisposition = (headResp.headers.get('content-disposition') || '').toLowerCase()
+        const contentType = (headResp.headers.get('content-type') || '').toLowerCase()
+        const isAttachment = contentDisposition.includes('attachment')
+        const isPdf = contentType.includes('pdf')
+        if (isAttachment || (contentType && !isPdf)) {
+          await downloadAndOpenRemoteFile(payload.url, payload.title)
+          return true
+        }
+      }
+    } catch {
+      // If HEAD is not supported, continue with in-app preview.
+    }
     const pdfWin = new BrowserWindow({
       width: 1100,
       height: 820,
@@ -282,6 +347,11 @@ function registerIpcHandlers() {
     })
     pdfWin.loadURL(payload.url)
     return true
+  })
+  handle('file:download-open', async (_event, payload: { url: string; filename?: string }) => {
+    const url = payload?.url?.trim()
+    if (!url) throw new Error('下载链接为空')
+    return downloadAndOpenRemoteFile(url, payload?.filename)
   })
 
   // ── File dialog ───────────────────────────────────────────────────────────

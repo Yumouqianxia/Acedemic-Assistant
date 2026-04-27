@@ -2,6 +2,7 @@
 defineProps<{
   isMaximized: boolean
   isDark: boolean
+  isMac: boolean
 }>()
 
 defineEmits<{
@@ -13,7 +14,7 @@ defineEmits<{
 </script>
 
 <template>
-  <div class="title-bar">
+  <div class="title-bar" :class="{ 'title-bar--mac': isMac }">
     <div class="tb-left">
       <div class="tb-logo">
         <span class="tb-logo-g">G</span>
@@ -51,24 +52,26 @@ defineEmits<{
         </svg>
       </button>
 
-      <button class="tb-btn tb-btn--minimize" title="最小化" @click="$emit('minimize')">
-        <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
-      </button>
-      <button class="tb-btn tb-btn--maximize" :title="isMaximized ? '还原' : '最大化'" @click="$emit('maximize')">
-        <svg v-if="isMaximized" width="10" height="10" viewBox="0 0 10 10">
-          <rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
-          <rect x="0" y="2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
-        </svg>
-        <svg v-else width="10" height="10" viewBox="0 0 10 10">
-          <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/>
-        </svg>
-      </button>
-      <button class="tb-btn tb-btn--close" title="关闭" @click="$emit('close')">
-        <svg width="10" height="10" viewBox="0 0 10 10">
-          <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/>
-          <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/>
-        </svg>
-      </button>
+      <template v-if="!isMac">
+        <button class="tb-btn tb-btn--minimize" title="最小化" @click="$emit('minimize')">
+          <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+        </button>
+        <button class="tb-btn tb-btn--maximize" :title="isMaximized ? '还原' : '最大化'" @click="$emit('maximize')">
+          <svg v-if="isMaximized" width="10" height="10" viewBox="0 0 10 10">
+            <rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
+            <rect x="0" y="2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
+          </svg>
+          <svg v-else width="10" height="10" viewBox="0 0 10 10">
+            <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/>
+          </svg>
+        </button>
+        <button class="tb-btn tb-btn--close" title="关闭" @click="$emit('close')">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/>
+          </svg>
+        </button>
+      </template>
     </div>
   </div>
 </template>
@@ -92,6 +95,10 @@ defineEmits<{
   gap: 10px;
   padding: 0 14px;
   flex-shrink: 0;
+}
+
+.title-bar--mac .tb-left {
+  padding-left: 82px;
 }
 
 .tb-logo {

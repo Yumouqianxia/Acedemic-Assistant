@@ -103,6 +103,7 @@ function ensureServices() {
 function createWindow() {
   // Remove the native menu bar entirely
   Menu.setApplicationMenu(null)
+  const isMac = process.platform === 'darwin'
 
   win = new BrowserWindow({
     title: 'GTIIT Campus Dashboard',
@@ -110,7 +111,8 @@ function createWindow() {
     height: 780,
     minWidth: 860,
     minHeight: 600,
-    frame: false,
+    frame: !isMac ? false : true,
+    ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -141,6 +143,7 @@ function registerIpcHandlers() {
   handle('ipc-test:ping', (_event, payload: string) => {
     return `pong from main: ${payload} @ ${new Date().toLocaleString()}`
   })
+  handle('app:platform', () => process.platform)
 
   handle('moodle:login', (_event, payload: { username: string; password: string; rememberPassword?: boolean }) => {
     return ensureServices().moodleService.login(payload)

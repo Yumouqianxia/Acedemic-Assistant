@@ -48,6 +48,9 @@ const electronAPI = {
   ping(message: string) {
     return ipcRenderer.invoke('ipc-test:ping', message)
   },
+  appPlatform() {
+    return ipcRenderer.invoke('app:platform') as Promise<string>
+  },
   onMainMessage(callback: (message: string) => void) {
     const listener = (_event: Electron.IpcRendererEvent, message: string) => callback(message)
     ipcRenderer.on('main-process-message', listener)

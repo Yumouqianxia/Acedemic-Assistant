@@ -3,6 +3,7 @@
 interface Window {
   electronAPI: {
     ping: (message: string) => Promise<string>
+    appPlatform: () => Promise<string>
     onMainMessage: (callback: (message: string) => void) => () => void
     moodleLogin: (payload: { username: string; password: string; rememberPassword?: boolean }) => Promise<{
       username: string

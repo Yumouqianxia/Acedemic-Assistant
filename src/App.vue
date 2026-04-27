@@ -18,6 +18,7 @@ import CourseDetailView from './views/CourseDetailView.vue'
 const router = useRouter()
 const appStage = ref<'login' | 'dashboard' | 'submission' | 'courseDetail'>('login')
 const submissionBackTarget = ref<'dashboard' | 'course'>('dashboard')
+const isMac = ref(false)
 
 const { user, loginForm, rememberPassword, loggingIn, loadProfiles, saveSession, restoreSession, clearSession } = useAuth()
 const { moodleSyncing, studentsSyncing, selectedCourse, selectedSections, loadingSections, selectedCourseExams, loadDashboard, loadCourseContents, clearDashboard } = useDashboard()
@@ -189,6 +190,12 @@ const handleBackFromSubmission = () => {
 }
 
 onMounted(async () => {
+  try {
+    const platform = await window.electronAPI.appPlatform()
+    isMac.value = platform === 'darwin'
+  } catch {
+    isMac.value = false
+  }
   await initWindowState()
   const cached = restoreSession()
   if (cached) {
@@ -213,6 +220,7 @@ onMounted(async () => {
   <AppTitleBar
     :is-maximized="isMaximized"
     :is-dark="isDark"
+    :is-mac="isMac"
     @minimize="winMinimize"
     @maximize="winMaximize"
     @close="winClose"

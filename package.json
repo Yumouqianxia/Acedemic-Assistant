@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "clean": "node scripts/clean.mjs",
-    "rebuild:native": "electron-builder install-app-deps",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "build": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder",
     "release": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder --publish always",
     "release:win": "pnpm clean && pnpm rebuild:native && pnpm icons:build && vue-tsc && vite build && electron-builder --win --publish always",
@@ -14,7 +14,7 @@
     "icons:build": "node scripts/build-icons.mjs",
     "icons:mac": "node scripts/build-icons-mac.mjs",
     "preview": "vite preview",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

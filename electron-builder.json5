@@ -3,7 +3,7 @@
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "com.yumouqianxia.acedemicassistant",
   "asar": true,
-  "npmRebuild": true,
+  "npmRebuild": false,
   "productName": "Acedemic Assistant",
   "directories": {
     "output": "release/${version}"

@@ -22,7 +22,7 @@ const gpaDisplay = computed(() => {
   const raw = dashboard.value.studentsProfile?.gpa
   if (!raw) return null
   const n = parseFloat(raw)
-  return isNaN(n) ? raw : n.toFixed(1)
+  return isNaN(n) ? raw : n.toFixed(2)
 })
 
 const completedCreditsNum = computed(() => {

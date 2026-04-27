@@ -22,6 +22,8 @@ let moodleService: MoodleService | null = null
 let studentsService: StudentsService | null = null
 let autoSyncTimer: NodeJS.Timeout | null = null
 let autoSyncRunning = false
+let updatePromptVisible = false
+let updateDownloadStarted = false
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
@@ -376,14 +378,44 @@ function registerIpcHandlers() {
 function setupAutoUpdater() {
   if (VITE_DEV_SERVER_URL) return
 
-  autoUpdater.autoDownload = true
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('checking-for-update', () => {
     console.log('[updater] checking for updates')
   })
-  autoUpdater.on('update-available', (info) => {
+  autoUpdater.on('update-available', async (info) => {
     console.log(`[updater] update available: ${info.version}`)
+    if (updatePromptVisible || updateDownloadStarted) return
+    updatePromptVisible = true
+    try {
+      const messageBoxOptions: Electron.MessageBoxOptions = {
+        type: 'info',
+        title: '发现新版本',
+        message: `发现新版本 v${info.version}，是否立即更新？`,
+        detail: '点击“立即更新”后将开始后台下载，下载完成后将在退出应用时自动安装。',
+        buttons: ['稍后', '立即更新'],
+        cancelId: 0,
+        defaultId: 1,
+        noLink: true,
+      }
+      const result = win
+        ? await dialog.showMessageBox(win, messageBoxOptions)
+        : await dialog.showMessageBox(messageBoxOptions)
+      if (result.response === 1) {
+        updateDownloadStarted = true
+        void autoUpdater.downloadUpdate().catch((error) => {
+          updateDownloadStarted = false
+          console.error('[updater] download failed:', error)
+        })
+      } else {
+        console.log('[updater] user postponed update download')
+      }
+    } catch (error) {
+      console.error('[updater] failed to show update prompt:', error)
+    } finally {
+      updatePromptVisible = false
+    }
   })
   autoUpdater.on('update-not-available', (info) => {
     console.log(`[updater] no updates. current target: ${info.version}`)
@@ -400,7 +432,9 @@ function setupAutoUpdater() {
   })
 
   setTimeout(() => {
-    void autoUpdater.checkForUpdatesAndNotify()
+    void autoUpdater.checkForUpdates().catch((error) => {
+      console.error('[updater] check failed:', error)
+    })
   }, CHECK_UPDATES_DELAY_MS)
 }
 

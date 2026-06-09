@@ -10,11 +10,12 @@ const emit = defineEmits<{
 const {
   loginForm,
   rememberPassword,
-  loggingIn,
+  autoSsoLogin,
   querySearchProfiles,
   handlePickProfile,
+  setAutoSsoLogin,
+  loggingIn,
 } = useAuth()
-
 </script>
 
 <template>
@@ -31,19 +32,19 @@ const {
           <span class="login-logo-label">T-IIT</span>
         </div>
         <div class="login-header-text">
-          <div class="login-title">GTIIT Campus Dashboard</div>
-          <div class="login-subtitle">Login to unified access: Moodle + Students Data</div>
+          <div class="login-title">GTIIT 校园助手</div>
+          <div class="login-subtitle">统一登录后可访问 Moodle 与 Students 数据</div>
         </div>
       </div>
 
       <div class="login-form">
         <div class="login-field">
-          <label class="login-label">Email Address</label>
+          <label class="login-label">邮箱账号</label>
           <el-autocomplete
             v-model="loginForm.username"
             autocomplete="username"
             clearable
-            placeholder="Enter Account (Email)"
+            placeholder="请输入学校邮箱"
             style="width: 100%"
             :prefix-icon="Message"
             :fetch-suggestions="querySearchProfiles"
@@ -52,13 +53,13 @@ const {
         </div>
 
         <div class="login-field">
-          <label class="login-label">Password</label>
+          <label class="login-label">密码</label>
           <el-input
             v-model="loginForm.password"
             autocomplete="current-password"
             show-password
             type="password"
-            placeholder="Enter Password"
+            placeholder="请输入密码"
             :prefix-icon="Lock"
             @keyup.enter="emit('login')"
           />
@@ -66,9 +67,15 @@ const {
 
         <div class="login-options-row">
           <el-checkbox v-model="rememberPassword" class="login-checkbox">
-            Keep Me Logged In
+            记住密码
           </el-checkbox>
-          <span class="login-forgot">Forgot Password?</span>
+          <el-checkbox
+            :model-value="autoSsoLogin"
+            class="login-checkbox"
+            @update:model-value="(value) => setAutoSsoLogin(Boolean(value))"
+          >
+            下次自动登录
+          </el-checkbox>
         </div>
 
         <el-button
@@ -77,11 +84,11 @@ const {
           @click="emit('login')"
         >
           <el-icon v-if="!loggingIn"><ArrowRight /></el-icon>
-          Sign In & Access Dashboard
+          登录并进入系统
         </el-button>
 
         <div class="login-sso-divider">
-          <span>Or sign in with:</span>
+          <span>或使用统一身份认证</span>
         </div>
 
         <div class="login-sso-row">
@@ -92,7 +99,8 @@ const {
               <span class="ms-sq ms-sq-b" />
               <span class="ms-sq ms-sq-y" />
             </span>
-            GTIIT SSO (Microsoft)
+            <el-icon v-if="!loggingIn"><ArrowRight /></el-icon>
+            使用 GTIIT SSO 登录
           </button>
         </div>
       </div>
@@ -218,6 +226,7 @@ const {
 .login-field :deep(.el-autocomplete .el-input__wrapper:hover) {
   box-shadow: 0 0 0 1px #4abfb0 inset;
 }
+
 .login-field :deep(.el-input__wrapper.is-focus),
 .login-field :deep(.el-autocomplete .el-input__wrapper.is-focus) {
   box-shadow: 0 0 0 1px #3ab0a1 inset;
@@ -233,17 +242,6 @@ const {
 .login-checkbox :deep(.el-checkbox__label) {
   font-size: 13px;
   color: var(--login-label);
-}
-
-.login-forgot {
-  font-size: 13px;
-  color: #6e7f8d;
-  cursor: pointer;
-  user-select: none;
-}
-
-.login-forgot:hover {
-  color: #3a7bd5;
 }
 
 .login-submit-btn {
@@ -265,13 +263,6 @@ const {
 .login-submit-btn:hover {
   background: #243040 !important;
   border-color: #243040 !important;
-}
-
-.login-hint-text {
-  text-align: center;
-  font-size: 12px;
-  color: #9aabb8;
-  margin-top: 12px;
 }
 
 .login-sso-divider {
@@ -298,17 +289,18 @@ const {
 
 .login-sso-btn {
   flex: 1;
-  height: 38px;
+  height: 42px;
   border: 1px solid var(--login-sso-border);
   background: var(--login-sso-bg);
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--login-sso-text);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 8px;
   font-family: inherit;
   transition: border-color 0.15s, background 0.15s;
 }

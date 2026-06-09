@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { TimelineEvent, UnifiedCourse } from './types'
 import { useAuth } from './composables/useAuth'
@@ -7,25 +7,72 @@ import { useDashboard } from './composables/useDashboard'
 import { useTimeline } from './composables/useTimeline'
 import { useSubmission } from './composables/useSubmission'
 import { useWindowControls } from './composables/useWindowControls'
-import { useTheme } from './composables/useTheme'
+import { useTheme, type ThemeMode } from './composables/useTheme'
 import { formatCourseDelta, notifyError, notifySuccess, notifyWarning } from './composables/useUtils'
 import AppTitleBar from './components/AppTitleBar.vue'
+import AppSidebar from './components/AppSidebar.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
+import CoursesView from './views/CoursesView.vue'
+import NotebookView from './views/NotebookView.vue'
 import SubmissionView from './views/SubmissionView.vue'
 import CourseDetailView from './views/CourseDetailView.vue'
+import SettingsView from './views/SettingsView.vue'
+import GradeView from './views/GradeView.vue'
+import ProfileView from './views/ProfileView.vue'
 
 const router = useRouter()
-const appStage = ref<'login' | 'dashboard' | 'submission' | 'courseDetail'>('login')
+const appStage = ref<'login' | 'dashboard' | 'course' | 'notebook' | 'grade' | 'profile' | 'submission' | 'courseDetail' | 'settings'>('login')
 const submissionBackTarget = ref<'dashboard' | 'course'>('dashboard')
+const courseDetailBackTarget = ref<'dashboard' | 'course'>('dashboard')
 const isMac = ref(false)
 
-const { user, loginForm, rememberPassword, loggingIn, loadProfiles, saveSession, restoreSession, clearSession } = useAuth()
+const sidebarActiveStage = computed(() => {
+  if (appStage.value === 'courseDetail' || appStage.value === 'course') return 'course'
+  if (appStage.value === 'submission') return 'dashboard'
+  return appStage.value
+})
+
+const handleSidebarNavigate = (stage: string) => {
+  if (stage === 'dashboard') {
+    appStage.value = 'dashboard'
+    void router.push({ name: 'home' })
+  } else if (stage === 'course') {
+    appStage.value = 'course'
+    void router.push({ name: 'home' })
+  } else if (stage === 'notebook') {
+    appStage.value = 'notebook'
+  } else if (stage === 'grade') {
+    appStage.value = 'grade'
+  } else if (stage === 'profile') {
+    appStage.value = 'profile'
+  } else if (stage === 'settings') {
+    handleOpenSettings()
+  }
+}
+
+const {
+  user,
+  loginForm,
+  rememberPassword,
+  loggingIn,
+  autoSsoLogin,
+  loadProfiles,
+  saveLastLoginUsername,
+  hydrateRememberedLogin,
+  saveSession,
+  restoreSession,
+  clearSession,
+} = useAuth()
 const { moodleSyncing, studentsSyncing, selectedCourse, selectedSections, loadingSections, selectedCourseExams, loadDashboard, loadCourseContents, clearDashboard } = useDashboard()
 const { loadTimeline, clearTimeline } = useTimeline()
 const { openSubmission, clearSubmission } = useSubmission()
 const { isMaximized, winMinimize, winMaximize, winClose, initWindowState } = useWindowControls()
-const { isDark, toggleTheme } = useTheme()
+const { isDark, themeMode, setThemeMode, toggleTheme } = useTheme()
+const language = ref<'zh-CN' | 'en-US'>('zh-CN')
+const autoSyncIntervalHours = ref<0 | 6 | 24>(24)
+const downloadDirectory = ref('')
+const appVersion = ref('')
 
 // ── Cross-cutting orchestration ───────────────────────────────────────────────
 
@@ -67,6 +114,7 @@ const handleLogin = async () => {
     })
     user.value = result
     saveSession(result)
+    saveLastLoginUsername(result.username)
     loginForm.password = ''
     appStage.value = 'dashboard'
     notifySuccess('登录成功，正在后台同步 Moodle / Students 数据', '登录成功')
@@ -86,6 +134,7 @@ const handleSsoLogin = async () => {
     const result = await window.electronAPI.moodleSsoLogin()
     user.value = result
     saveSession(result)
+    saveLastLoginUsername(result.username)
     appStage.value = 'dashboard'
     notifySuccess('SSO 登录成功，正在后台同步数据', '登录成功')
     await loadProfiles()
@@ -134,7 +183,25 @@ const handleSyncAll = async () => {
   }
 }
 
+const handleRefreshGrades = async () => {
+  if (!user.value) {
+    notifyWarning('请先登录后再刷新成绩', '未登录')
+    return
+  }
+  studentsSyncing.value = true
+  try {
+    await window.electronAPI.studentsSync()
+    await loadDashboard()
+    notifySuccess('成绩刷新完成', '刷新成功')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '刷新成绩失败', '刷新失败')
+  } finally {
+    studentsSyncing.value = false
+  }
+}
+
 const handleSelectCourse = async (course: UnifiedCourse) => {
+  courseDetailBackTarget.value = appStage.value === 'course' ? 'course' : 'dashboard'
   selectedCourse.value = course
   appStage.value = 'courseDetail'
   void router.push({
@@ -145,11 +212,103 @@ const handleSelectCourse = async (course: UnifiedCourse) => {
 }
 
 const handleBackFromCourseDetail = () => {
-  appStage.value = 'dashboard'
+  appStage.value = courseDetailBackTarget.value
   selectedCourse.value = null
   selectedSections.value = []
   loadingSections.value = false
   void router.push({ name: 'home' })
+}
+
+const handleOpenSettings = () => {
+  appStage.value = 'settings'
+  void router.push({ name: 'settings' })
+}
+
+const handleBackFromSettings = () => {
+  appStage.value = 'dashboard'
+  void router.push({ name: 'home' })
+}
+
+const persistPreferences = async (patch: Partial<{
+  language: 'zh-CN' | 'en-US'
+  themeMode: ThemeMode
+  autoSyncIntervalHours: 0 | 6 | 24
+  downloadDirectory: string | null
+}>) => {
+  try {
+    const next = await window.electronAPI.appPreferencesUpdate(patch)
+    language.value = next.language
+    setThemeMode(next.themeMode)
+    autoSyncIntervalHours.value = next.autoSyncIntervalHours
+    downloadDirectory.value = next.downloadDirectory || await window.electronAPI.getDownloadDirectory()
+  } catch (error) {
+    notifyWarning(error instanceof Error ? error.message : '设置保存失败', '设置失败')
+  }
+}
+
+const handleLanguageChange = (nextLanguage: 'zh-CN' | 'en-US') => {
+  language.value = nextLanguage
+  void persistPreferences({ language: nextLanguage })
+}
+
+const handleThemeModeChange = (mode: ThemeMode) => {
+  setThemeMode(mode)
+  void persistPreferences({ themeMode: mode })
+}
+
+const handleToggleThemeFromTitleBar = () => {
+  toggleTheme()
+  void persistPreferences({ themeMode: themeMode.value })
+}
+
+const handleAutoSyncIntervalChange = (hours: 0 | 6 | 24) => {
+  autoSyncIntervalHours.value = hours
+  void persistPreferences({ autoSyncIntervalHours: hours })
+  notifySuccess(hours ? `已设置自动同步频率：每 ${hours} 小时` : '已关闭自动同步', '设置已保存')
+}
+
+const handleChooseDownloadDirectory = async () => {
+  try {
+    const result = await window.electronAPI.dialogOpenDirectory({ title: '选择下载目录' })
+    if (result.canceled || !result.filePaths.length) return
+    await window.electronAPI.setDownloadDirectory({ directory: result.filePaths[0] })
+    await persistPreferences({ downloadDirectory: result.filePaths[0] })
+    notifySuccess('下载目录已更新', '设置成功')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '设置下载目录失败', '设置失败')
+  }
+}
+
+const handleResetDownloadDirectory = async () => {
+  try {
+    await window.electronAPI.setDownloadDirectory({ directory: null })
+    await persistPreferences({ downloadDirectory: null })
+    notifySuccess('已恢复默认下载目录', '设置成功')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '恢复默认目录失败', '设置失败')
+  }
+}
+
+const handleClearPreviewCache = async () => {
+  try {
+    const result = await window.electronAPI.clearPreviewCache()
+    notifySuccess(`已清理 ${result.removed} 项缓存`, '缓存已清理')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '清理缓存失败', '操作失败')
+  }
+}
+
+const handleCheckUpdates = async () => {
+  const result = await window.electronAPI.updaterCheckNow()
+  if (result.status === 'error') {
+    notifyError(result.message, '检查更新失败')
+    return
+  }
+  if (result.status === 'available') {
+    notifySuccess(result.message, '发现更新')
+    return
+  }
+  notifySuccess(result.message, '检查完成')
 }
 
 const handleOpenSubmissionFromCourse = (payload: {
@@ -197,12 +356,27 @@ onMounted(async () => {
     isMac.value = false
   }
   await initWindowState()
+  try {
+    appVersion.value = await window.electronAPI.appVersion()
+  } catch {
+    appVersion.value = ''
+  }
+  try {
+    const pref = await window.electronAPI.appPreferencesGet()
+    language.value = pref.language
+    setThemeMode(pref.themeMode)
+    autoSyncIntervalHours.value = pref.autoSyncIntervalHours
+    downloadDirectory.value = pref.downloadDirectory || await window.electronAPI.getDownloadDirectory()
+  } catch {
+    // ignore preference load failures
+  }
   const cached = restoreSession()
   if (cached) {
     user.value = cached
     appStage.value = 'dashboard'
   }
   await loadProfiles()
+  await hydrateRememberedLogin()
   try {
     await loadDashboard()
   } catch {
@@ -210,6 +384,8 @@ onMounted(async () => {
   }
   if (appStage.value === 'dashboard') {
     void loadTimeline()
+  } else if (autoSsoLogin.value && !loggingIn.value) {
+    void handleSsoLogin()
   }
 })
 </script>
@@ -221,41 +397,87 @@ onMounted(async () => {
     :is-maximized="isMaximized"
     :is-dark="isDark"
     :is-mac="isMac"
+    :user="user"
     @minimize="winMinimize"
     @maximize="winMaximize"
     @close="winClose"
-    @toggle-theme="toggleTheme"
+    @toggle-theme="handleToggleThemeFromTitleBar"
+    @logout="handleLogout"
   />
 
+  <!-- Login screen: full width, no sidebar -->
   <LoginView
     v-if="appStage === 'login'"
     @login="handleLogin"
     @sso-login="handleSsoLogin"
   />
 
-  <DashboardView
-    v-else-if="appStage === 'dashboard'"
-    @select-course="handleSelectCourse"
-    @open-submission="handleOpenSubmission"
-    @sync-all="handleSyncAll"
-    @logout="handleLogout"
-  />
+  <!-- Main layout: sidebar + content -->
+  <div v-else class="app-body">
+    <AppSidebar
+      :active-stage="sidebarActiveStage"
+      @navigate="handleSidebarNavigate"
+    />
 
-  <CourseDetailView
-    v-if="appStage === 'courseDetail' && selectedCourse"
-    :course="selectedCourse"
-    :sections="selectedSections"
-    :loading="loadingSections"
-    :exams="selectedCourseExams"
-    @back="handleBackFromCourseDetail"
-    @open-submission="handleOpenSubmissionFromCourse"
-  />
+    <div class="app-content">
 
-  <SubmissionView
-    v-if="appStage === 'submission'"
-    :back-target="submissionBackTarget"
-    @back="handleBackFromSubmission"
-  />
+      <DashboardView
+        v-if="appStage === 'dashboard'"
+        @select-course="handleSelectCourse"
+        @open-submission="handleOpenSubmission"
+        @sync-all="handleSyncAll"
+      />
+
+      <CoursesView
+        v-else-if="appStage === 'course'"
+        @select-course="handleSelectCourse"
+      />
+
+      <NotebookView v-else-if="appStage === 'notebook'" />
+
+      <GradeView
+        v-else-if="appStage === 'grade'"
+        @refresh-grades="handleRefreshGrades"
+      />
+
+      <ProfileView v-else-if="appStage === 'profile'" />
+
+      <SettingsView
+        v-else-if="appStage === 'settings'"
+        :app-version="appVersion"
+        :theme-mode="themeMode"
+        :auto-sync-interval-hours="autoSyncIntervalHours"
+        :download-directory="downloadDirectory"
+        :language="language"
+        @back="handleBackFromSettings"
+        @update-theme-mode="handleThemeModeChange"
+        @update-auto-sync-interval="handleAutoSyncIntervalChange"
+        @update-language="handleLanguageChange"
+        @choose-download-directory="handleChooseDownloadDirectory"
+        @reset-download-directory="handleResetDownloadDirectory"
+        @clear-preview-cache="handleClearPreviewCache"
+        @check-updates="handleCheckUpdates"
+      />
+
+      <CourseDetailView
+        v-else-if="appStage === 'courseDetail' && selectedCourse"
+        :back-target="courseDetailBackTarget"
+        :course="selectedCourse"
+        :sections="selectedSections"
+        :loading="loadingSections"
+        :exams="selectedCourseExams"
+        @back="handleBackFromCourseDetail"
+        @open-submission="handleOpenSubmissionFromCourse"
+      />
+
+      <SubmissionView
+        v-else-if="appStage === 'submission'"
+        :back-target="submissionBackTarget"
+        @back="handleBackFromSubmission"
+      />
+
+    </div>
+  </div>
 
 </div>
 </template>
@@ -494,6 +716,20 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  overflow: hidden;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 </style>

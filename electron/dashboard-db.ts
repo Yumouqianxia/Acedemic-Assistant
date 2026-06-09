@@ -10,6 +10,7 @@ export type UnifiedCourse = {
   semesterLabel: string
   semesterTechnion: string
   credits: number | null
+  grade: string | null
   moodleCourseId: number | null
   hasMoodle: boolean
   hasStudents: boolean
@@ -30,18 +31,24 @@ type MoodleCourseInput = {
   id: number
   fullname: string
   shortname: string
+  semesterLabel?: string
 }
 
 type StudentsCourseInput = {
   code: string
   name: string
   credits: number
+  grade: string | null
+  semesterLabel: string
+  semesterTechnion: string
 }
 
 type SyncDelta = {
   inserted: number
   updated: number
 }
+
+type AcademicTerm = 'Fall' | 'Winter' | 'Spring' | 'Summer'
 
 export class DashboardDb {
   private db: import('better-sqlite3').Database
@@ -62,6 +69,7 @@ export class DashboardDb {
         semester_label TEXT DEFAULT '',
         semester_technion TEXT DEFAULT '',
         credits REAL,
+        course_grade TEXT,
         moodle_course_id INTEGER,
         has_moodle INTEGER NOT NULL DEFAULT 0,
         has_students INTEGER NOT NULL DEFAULT 0,
@@ -94,6 +102,15 @@ export class DashboardDb {
         updated_at TEXT NOT NULL
       );
     `)
+    this.ensureUnifiedCoursesColumns()
+  }
+
+  private ensureUnifiedCoursesColumns() {
+    const columns = this.db.prepare(`PRAGMA table_info('unified_courses')`).all() as Array<{ name: string }>
+    const hasCourseGrade = columns.some((col) => col.name === 'course_grade')
+    if (!hasCourseGrade) {
+      this.db.exec('ALTER TABLE unified_courses ADD COLUMN course_grade TEXT')
+    }
   }
 
   private nowIso() {
@@ -109,7 +126,94 @@ export class DashboardDb {
     return courseCode || fallback.trim().toLowerCase()
   }
 
-  upsertMoodleCourses(semesterLabel: string, courses: MoodleCourseInput[]): SyncDelta {
+  private toYear(text: string) {
+    if (text.length === 4) return Number.parseInt(text, 10)
+    const yy = Number.parseInt(text, 10)
+    return yy >= 70 ? 1900 + yy : 2000 + yy
+  }
+
+  private academicYearStart(term: AcademicTerm, calendarYear: number) {
+    return term === 'Fall' ? calendarYear : calendarYear - 1
+  }
+
+  private parseAcademicTerm(...values: Array<string | undefined | null>) {
+    const termMap: Record<string, AcademicTerm> = {
+      fall: 'Fall',
+      autumn: 'Fall',
+      winter: 'Winter',
+      spring: 'Spring',
+      sping: 'Spring',
+      summer: 'Summer',
+    }
+    for (const value of values) {
+      const raw = (value || '').trim()
+      if (!raw) continue
+
+      const academicYearHit = raw.match(/(20\d{2})\s*[-/]\s*(?:20)?(\d{2})\s*[-/ ]*\s*(spring|sping|summer|fall|autumn|winter)\b/i)
+      if (academicYearHit) {
+        const startYear = Number.parseInt(academicYearHit[1], 10)
+        const term = termMap[academicYearHit[3].toLowerCase()]
+        return { key: `${startYear}-${term}`, startYear, term }
+      }
+
+      const termFirst = raw.match(/\b(spring|sping|summer|fall|autumn|winter)\s*[-/ ]*\s*(\d{2,4})\b/i)
+      if (termFirst) {
+        const term = termMap[termFirst[1].toLowerCase()]
+        const startYear = this.academicYearStart(term, this.toYear(termFirst[2]))
+        return { key: `${startYear}-${term}`, startYear, term }
+      }
+
+      const yearFirst = raw.match(/\b(\d{2,4})\s*[-/ ]*\s*(spring|sping|summer|fall|autumn|winter)\b/i)
+      if (yearFirst) {
+        const term = termMap[yearFirst[2].toLowerCase()]
+        const startYear = this.academicYearStart(term, this.toYear(yearFirst[1]))
+        return { key: `${startYear}-${term}`, startYear, term }
+      }
+
+      const techHit = raw.match(/(20\d{2})\D*(20\d{2})\D*([1234])/)
+      if (techHit) {
+        const startYear = Number.parseInt(techHit[1], 10)
+        const term: AcademicTerm = techHit[3] === '2'
+          ? 'Spring'
+          : techHit[3] === '3'
+            ? 'Summer'
+            : techHit[3] === '4'
+              ? 'Winter'
+              : 'Fall'
+        return { key: `${startYear}-${term}`, startYear, term }
+      }
+    }
+    return null
+  }
+
+  private parseDisplayTerm(course: {
+    semesterTechnion: string
+    semesterLabel: string
+    courseName: string
+  }) {
+    return this.parseAcademicTerm(course.courseName, course.semesterLabel, course.semesterTechnion)
+  }
+
+  private academicTermLabel(term: { startYear: number; term: AcademicTerm }) {
+    const calendarYear = term.term === 'Fall' ? term.startYear : term.startYear + 1
+    return `${String(calendarYear).slice(-2)} ${term.term}`
+  }
+
+  private cleanMoodleCourseName(name: string) {
+    return name
+      .replace(/^\s*\d{5,6}\s*[-:]\s*/i, '')
+      .replace(/\s*[-–—]\s*(spring|sping|summer|fall|autumn|winter)\s+\d{2,4}\s*$/i, '')
+      .replace(/\s*[-–—]\s*\d{2,4}\s+(spring|sping|summer|fall|autumn|winter)\s*$/i, '')
+      .trim()
+  }
+
+  private toUnifiedCourseKey(courseCode: string, fallback: string, ...termValues: Array<string | undefined | null>) {
+    const baseKey = this.toCourseKey(courseCode, fallback)
+    const term = this.parseAcademicTerm(...termValues)
+    return term ? `${baseKey}__${term.key}` : baseKey
+  }
+
+  upsertMoodleCourses(courses: MoodleCourseInput[]): SyncDelta {
     const now = this.nowIso()
     const queryByKey = this.db.prepare(`
       SELECT
@@ -148,7 +252,7 @@ export class DashboardDb {
       let updated = 0
       for (const course of courses) {
         const code = this.normalizeCourseCode(course.shortname || course.fullname)
-        const key = this.toCourseKey(code, course.fullname)
+        const key = this.toUnifiedCourseKey(code, course.fullname, course.semesterLabel, course.fullname, course.shortname)
         const existing = queryByKey.get(key) as
           | {
               courseCode: string
@@ -159,7 +263,7 @@ export class DashboardDb {
               moodleShortname: string
             }
           | undefined
-        const nextSemesterLabel = semesterLabel || existing?.semesterLabel || ''
+        const nextSemesterLabel = course.semesterLabel || existing?.semesterLabel || ''
         if (!existing) {
           inserted += 1
         } else {
@@ -175,7 +279,7 @@ export class DashboardDb {
           courseKey: key,
           courseCode: code,
           courseName: course.fullname,
-          semesterLabel,
+          semesterLabel: course.semesterLabel ?? '',
           moodleCourseId: course.id,
           moodleShortname: course.shortname,
           updatedAt: now,
@@ -186,7 +290,7 @@ export class DashboardDb {
     return tx()
   }
 
-  upsertStudentsCourses(semesterLabel: string, semesterTechnion: string, courses: StudentsCourseInput[]): SyncDelta {
+  upsertStudentsCourses(courses: StudentsCourseInput[]): SyncDelta {
     const now = this.nowIso()
     const queryByKey = this.db.prepare(`
       SELECT
@@ -195,17 +299,29 @@ export class DashboardDb {
         semester_label as semesterLabel,
         semester_technion as semesterTechnion,
         credits,
+        course_grade as grade,
         has_students as hasStudents
+      FROM unified_courses
+      WHERE course_key = ?
+    `)
+    const queryLegacyMoodleByKey = this.db.prepare(`
+      SELECT
+        course_key as courseKey,
+        course_name as courseName,
+        semester_label as semesterLabel,
+        moodle_course_id as moodleCourseId,
+        moodle_shortname as moodleShortname,
+        has_moodle as hasMoodle
       FROM unified_courses
       WHERE course_key = ?
     `)
     const stmt = this.db.prepare(`
       INSERT INTO unified_courses (
         course_key, course_code, course_name, semester_label, semester_technion,
-        credits, has_moodle, has_students, updated_at
+        credits, course_grade, has_moodle, has_students, updated_at
       ) VALUES (
         @courseKey, @courseCode, @courseName, @semesterLabel, @semesterTechnion,
-        @credits, 0, 1, @updatedAt
+        @credits, @grade, 0, 1, @updatedAt
       )
       ON CONFLICT(course_key) DO UPDATE SET
         course_code = excluded.course_code,
@@ -213,8 +329,26 @@ export class DashboardDb {
         semester_label = excluded.semester_label,
         semester_technion = excluded.semester_technion,
         credits = excluded.credits,
+        course_grade = COALESCE(excluded.course_grade, unified_courses.course_grade),
         has_students = 1,
         updated_at = excluded.updated_at
+    `)
+    const mergeMoodleStmt = this.db.prepare(`
+      UPDATE unified_courses
+      SET
+        moodle_course_id = COALESCE(moodle_course_id, @moodleCourseId),
+        has_moodle = CASE WHEN @moodleCourseId IS NOT NULL THEN 1 ELSE has_moodle END,
+        moodle_shortname = CASE WHEN @moodleShortname <> '' THEN @moodleShortname ELSE moodle_shortname END,
+        semester_label = CASE
+          WHEN semester_label = '' AND @moodleSemesterLabel <> '' THEN @moodleSemesterLabel
+          ELSE semester_label
+        END,
+        updated_at = @updatedAt
+      WHERE course_key = @courseKey
+    `)
+    const deleteLegacyMoodleStmt = this.db.prepare(`
+      DELETE FROM unified_courses
+      WHERE course_key = ?
     `)
 
     const tx = this.db.transaction(() => {
@@ -222,8 +356,25 @@ export class DashboardDb {
       let updated = 0
       for (const course of courses) {
         const code = this.normalizeCourseCode(course.code || course.name) || course.code
-        const key = this.toCourseKey(code, course.name)
+        const baseKey = this.toCourseKey(code, course.name)
+        const key = this.toUnifiedCourseKey(code, course.name, course.semesterTechnion, course.semesterLabel, course.name)
         const nextCredits = Number.isFinite(course.credits) ? course.credits : null
+        const legacyMoodle = queryLegacyMoodleByKey.get(baseKey) as
+          | {
+              courseKey: string
+              courseName: string
+              semesterLabel: string
+              moodleCourseId: number | null
+              moodleShortname: string
+              hasMoodle: 0 | 1
+            }
+          | undefined
+        const legacyMoodleMatches = Boolean(
+          legacyMoodle?.hasMoodle
+          && legacyMoodle.moodleCourseId
+          && this.parseAcademicTerm(legacyMoodle.semesterLabel, legacyMoodle.courseName)?.key
+            === this.parseAcademicTerm(course.semesterTechnion, course.semesterLabel, course.name)?.key,
+        )
         const existing = queryByKey.get(key) as
           | {
               courseCode: string
@@ -231,6 +382,7 @@ export class DashboardDb {
               semesterLabel: string
               semesterTechnion: string
               credits: number | null
+              grade: string | null
               hasStudents: 0 | 1
             }
           | undefined
@@ -239,9 +391,10 @@ export class DashboardDb {
         } else {
           const changed = existing.courseCode !== code
             || existing.courseName !== course.name
-            || existing.semesterLabel !== semesterLabel
-            || existing.semesterTechnion !== semesterTechnion
+            || existing.semesterLabel !== course.semesterLabel
+            || existing.semesterTechnion !== course.semesterTechnion
             || (existing.credits ?? null) !== (nextCredits ?? null)
+            || (existing.grade ?? null) !== (course.grade ?? null)
             || existing.hasStudents !== 1
           if (changed) updated += 1
         }
@@ -249,11 +402,24 @@ export class DashboardDb {
           courseKey: key,
           courseCode: code,
           courseName: course.name,
-          semesterLabel,
-          semesterTechnion,
+          semesterLabel: course.semesterLabel,
+          semesterTechnion: course.semesterTechnion,
           credits: nextCredits,
+          grade: course.grade,
           updatedAt: now,
         })
+        if (legacyMoodleMatches && legacyMoodle) {
+          mergeMoodleStmt.run({
+            courseKey: key,
+            moodleCourseId: legacyMoodle.moodleCourseId,
+            moodleShortname: legacyMoodle.moodleShortname || '',
+            moodleSemesterLabel: legacyMoodle.semesterLabel || '',
+            updatedAt: now,
+          })
+          if (legacyMoodle.courseKey !== key) {
+            deleteLegacyMoodleStmt.run(legacyMoodle.courseKey)
+          }
+        }
       }
       return { inserted, updated }
     })
@@ -384,6 +550,7 @@ export class DashboardDb {
         semester_label as semesterLabel,
         semester_technion as semesterTechnion,
         credits,
+        course_grade as grade,
         moodle_course_id as moodleCourseId,
         has_moodle as hasMoodle,
         has_students as hasStudents,
@@ -397,6 +564,7 @@ export class DashboardDb {
       semesterLabel: string
       semesterTechnion: string
       credits: number | null
+      grade: string | null
       moodleCourseId: number | null
       hasMoodle: 0 | 1
       hasStudents: 0 | 1
@@ -417,8 +585,49 @@ export class DashboardDb {
       ORDER BY date, time, course_code
     `).all()
 
+    const groupedCourses = new Map<string, typeof courses[number][]>()
+    for (const course of courses) {
+      const term = this.parseDisplayTerm(course)
+      const groupKey = term ? `${course.courseCode || course.courseName}__${term.key}` : course.courseKey
+      const group = groupedCourses.get(groupKey) || []
+      group.push(course)
+      groupedCourses.set(groupKey, group)
+    }
+
+    const toVisibleCourse = (course: typeof courses[number]) => {
+      const term = this.parseDisplayTerm(course)
+      return {
+        ...course,
+        courseName: this.cleanMoodleCourseName(course.courseName),
+        semesterLabel: term ? this.academicTermLabel(term) : course.semesterLabel,
+      }
+    }
+
+    const visibleCourses = Array.from(groupedCourses.values()).map((group) => {
+      if (group.length === 1) return toVisibleCourse(group[0])
+      const studentsRow = group.find((course) => course.hasStudents === 1)
+      const moodleRow = group.find((course) => course.hasMoodle === 1 && course.moodleCourseId)
+      const primary = studentsRow || moodleRow || group[0]
+      const term = this.parseDisplayTerm(primary)
+      const updatedAtValues = group.map((course) => course.updatedAt).sort()
+      return {
+        ...primary,
+        courseKey: primary.courseKey,
+        courseCode: primary.courseCode || moodleRow?.courseCode || '',
+        courseName: this.cleanMoodleCourseName(studentsRow?.courseName || primary.courseName),
+        semesterLabel: term ? this.academicTermLabel(term) : (studentsRow?.semesterLabel || primary.semesterLabel),
+        semesterTechnion: studentsRow?.semesterTechnion || primary.semesterTechnion,
+        credits: studentsRow?.credits ?? primary.credits,
+        grade: studentsRow?.grade ?? primary.grade,
+        moodleCourseId: primary.moodleCourseId ?? moodleRow?.moodleCourseId ?? null,
+        hasMoodle: group.some((course) => course.hasMoodle === 1) ? 1 as const : 0 as const,
+        hasStudents: group.some((course) => course.hasStudents === 1) ? 1 as const : 0 as const,
+        updatedAt: updatedAtValues[updatedAtValues.length - 1] || primary.updatedAt,
+      }
+    })
+
     return {
-      courses: courses.map((item) => ({
+      courses: visibleCourses.map((item) => ({
         ...item,
         hasMoodle: item.hasMoodle === 1,
         hasStudents: item.hasStudents === 1,

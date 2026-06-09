@@ -17,6 +17,7 @@ export type UnifiedCourse = {
   semesterLabel: string
   semesterTechnion: string
   credits: number | null
+  grade: string | null
   moodleCourseId: number | null
   hasMoodle: boolean
   hasStudents: boolean
@@ -88,7 +89,7 @@ export type SubmissionStatus = {
   status: string
   canSubmit: boolean
   canEdit: boolean
-  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype?: string }>
   gradeText: string | null
   gradedAt: number | null
   grader: { id: number; fullName: string; email: string | null } | null
@@ -119,4 +120,34 @@ export type DashboardData = {
     gpa: string
     accumulatedCreditPoints: string
   } | null
+}
+
+export type NotebookCourse = {
+  courseKey: string
+  courseCode: string
+  courseName: string
+}
+
+export type NoteSourceType = 'markdown' | 'html-import' | 'richtext'
+
+export type NotebookItem = {
+  id: string
+  title: string
+  file: string
+  htmlFile: string
+  sourceType: NoteSourceType
+  editor: 'markdown' | 'external-html' | 'richtext'
+  importMode?: 'copy' | 'mirror'
+  sourcePath?: string
+  sourceDir?: string
+  syncedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type NotebookIndex = {
+  version: 1
+  course: NotebookCourse
+  items: NotebookItem[]
+  updatedAt: string
 }

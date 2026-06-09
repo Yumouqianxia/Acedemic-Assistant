@@ -1,16 +1,36 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import type { MoodleUser } from '../types'
+
 defineProps<{
   isMaximized: boolean
   isDark: boolean
   isMac: boolean
+  user: MoodleUser | null
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   minimize: []
   maximize: []
   close: []
   'toggle-theme': []
+  logout: []
 }>()
+
+const accountDropdownVisible = ref(false)
+
+const toggleAccountDropdown = () => {
+  accountDropdownVisible.value = !accountDropdownVisible.value
+}
+
+const closeDropdown = () => {
+  accountDropdownVisible.value = false
+}
+
+const handleLogout = () => {
+  accountDropdownVisible.value = false
+  emit('logout')
+}
 </script>
 
 <template>
@@ -28,17 +48,35 @@ defineEmits<{
     </div>
 
     <div class="tb-controls">
+      <!-- User account dropdown (only when logged in) -->
+      <div v-if="user" class="tb-account" @click.stop="toggleAccountDropdown">
+        <div class="tb-avatar">{{ user.fullName?.charAt(0).toUpperCase() || '?' }}</div>
+        <span class="tb-username">{{ user.fullName }}</span>
+        <svg class="tb-chevron" :class="{ 'tb-chevron--open': accountDropdownVisible }" width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <!-- Dropdown menu -->
+        <div v-if="accountDropdownVisible" class="tb-dropdown" @click.stop>
+          <div class="tb-dropdown-item tb-dropdown-item--danger" @click="handleLogout">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+            <span>Logout</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Theme toggle button -->
       <button
         class="tb-btn tb-btn--theme"
         :title="isDark ? '切换到亮色模式' : '切换到暗色模式'"
         @click="$emit('toggle-theme')"
       >
-        <!-- Moon icon: shown in light mode to switch to dark -->
         <svg v-if="!isDark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
         </svg>
-        <!-- Sun icon: shown in dark mode to switch to light -->
         <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="5"/>
           <line x1="12" y1="1" x2="12" y2="3"/>
@@ -74,6 +112,9 @@ defineEmits<{
       </template>
     </div>
   </div>
+
+  <!-- Click-outside overlay to close dropdown -->
+  <div v-if="accountDropdownVisible" class="tb-overlay" @click="closeDropdown" />
 </template>
 
 <style scoped>
@@ -87,6 +128,7 @@ defineEmits<{
   user-select: none;
   flex-shrink: 0;
   z-index: 1000;
+  position: relative;
 }
 
 .tb-left {
@@ -146,6 +188,98 @@ defineEmits<{
   flex-shrink: 0;
 }
 
+/* ── Account area ──────────────────────────────────────────── */
+.tb-account {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 40px;
+  cursor: pointer;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background 0.15s;
+}
+
+.tb-account:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tb-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #2a5298;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tb-username {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tb-chevron {
+  color: rgba(255, 255, 255, 0.5);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.tb-chevron--open {
+  transform: rotate(180deg);
+}
+
+.tb-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 150px;
+  background: #1e2d3d;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  overflow: hidden;
+  animation: dropdownFadeIn 0.12s ease;
+}
+
+@keyframes dropdownFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tb-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.tb-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.tb-dropdown-item--danger:hover {
+  background: rgba(220, 50, 50, 0.2);
+  color: #ff7b7b;
+}
+
+/* ── Regular buttons ───────────────────────────────────────── */
 .tb-btn {
   width: 46px;
   height: 40px;
@@ -179,5 +313,12 @@ defineEmits<{
 .tb-btn--close:hover {
   background: #e81123;
   color: #fff;
+}
+
+/* ── Click-outside overlay ─────────────────────────────────── */
+.tb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
 }
 </style>

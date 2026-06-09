@@ -1,11 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { access, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { autoUpdater } from 'electron-updater'
 import { DashboardDb } from './dashboard-db'
 import { MoodleService } from './services/moodle-service'
 import { StudentsService } from './services/students-service'
+import { NotebookService, type NotebookCourse } from './notebook-service'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -20,15 +21,43 @@ let win: BrowserWindow | null = null
 let dashboardDb: DashboardDb | null = null
 let moodleService: MoodleService | null = null
 let studentsService: StudentsService | null = null
+let notebookService: NotebookService | null = null
 let autoSyncTimer: NodeJS.Timeout | null = null
 let autoSyncRunning = false
 let updatePromptVisible = false
 let updateDownloadStarted = false
+const downloadedFileCache = new Map<string, string>()
+const inFlightDownloadTasks = new Map<string, Promise<{ filePath: string }>>()
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
 const STUDENTS_RETRY_SETTLE_MS = 600
 const CHECK_UPDATES_DELAY_MS = 15_000
+const DOWNLOAD_CACHE_SUBDIR = 'CampusDashboardCache'
+const PREF_KEY = 'app:preferences'
+
+type ThemeMode = 'light' | 'dark' | 'system'
+type Language = 'zh-CN' | 'en-US'
+type AutoSyncIntervalHours = 0 | 6 | 24
+type AppPreferences = {
+  language: Language
+  themeMode: ThemeMode
+  autoSyncIntervalHours: AutoSyncIntervalHours
+  downloadDirectory: string | null
+}
+
+type CourseDownloadResource = {
+  sectionName: string
+  moduleName: string
+  filename: string
+  fileurl: string
+}
+
+const DEFAULT_PREFERENCES: AppPreferences = {
+  language: 'zh-CN',
+  themeMode: 'system',
+  autoSyncIntervalHours: 24,
+  downloadDirectory: null,
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const now = () => Date.now()
@@ -61,20 +90,137 @@ function shouldDownloadDirectly(fileUrl: string) {
   return FORCE_DOWNLOAD_RE.test(fileUrl)
 }
 
-async function downloadAndOpenRemoteFile(url: string, preferredFilename?: string) {
-  const response = await net.fetch(url, { method: 'GET' })
-  if (!response.ok) {
-    throw new Error(`下载失败 (HTTP ${response.status})`)
-  }
+function buildDownloadCacheKey(url: string, preferredFilename?: string) {
+  return `${url.trim()}::${(preferredFilename ?? '').trim()}`
+}
+
+async function openLocalFile(filePath: string) {
+  const openError = await shell.openPath(filePath)
+  if (openError) throw new Error(openError)
+}
+
+async function downloadAndOpenRemoteFile(
+  url: string,
+  preferredFilename?: string,
+  options?: { reuseExisting?: boolean },
+) {
+  const cacheKey = buildDownloadCacheKey(url, preferredFilename)
+  const reuseExisting = options?.reuseExisting ?? false
   const rawName = preferredFilename?.trim() || path.basename(new URL(url).pathname) || `download-${Date.now()}`
   const finalName = sanitizeFilename(rawName)
-  const downloadDir = app.getPath('downloads')
-  const outputPath = await pickAvailablePath(downloadDir, finalName)
-  const bytes = await response.arrayBuffer()
-  await writeFile(outputPath, Buffer.from(bytes))
-  const openError = await shell.openPath(outputPath)
-  if (openError) throw new Error(openError)
-  return { filePath: outputPath }
+  const downloadDir = reuseExisting ? getPreviewCacheDir() : getDownloadBaseDir()
+  await ensureDirectory(downloadDir)
+  const reusableOutputPath = path.join(downloadDir, finalName)
+
+  if (reuseExisting) {
+    const cachedPath = downloadedFileCache.get(cacheKey)
+    if (cachedPath) {
+      try {
+        await access(cachedPath)
+        await openLocalFile(cachedPath)
+        return { filePath: cachedPath }
+      } catch {
+        downloadedFileCache.delete(cacheKey)
+      }
+    }
+
+    try {
+      await access(reusableOutputPath)
+      downloadedFileCache.set(cacheKey, reusableOutputPath)
+      await openLocalFile(reusableOutputPath)
+      return { filePath: reusableOutputPath }
+    } catch {
+      // file not found; continue to download
+    }
+  }
+
+  if (reuseExisting) {
+    const inFlightTask = inFlightDownloadTasks.get(cacheKey)
+    if (inFlightTask) {
+      const { filePath } = await inFlightTask
+      await openLocalFile(filePath)
+      return { filePath }
+    }
+  }
+
+  const downloadTask = (async () => {
+    const response = await net.fetch(url, { method: 'GET' })
+    if (!response.ok) {
+      throw new Error(`下载失败 (HTTP ${response.status})`)
+    }
+    const outputPath = reuseExisting
+      ? reusableOutputPath
+      : await pickAvailablePath(downloadDir, finalName)
+    const bytes = await response.arrayBuffer()
+    await writeFile(outputPath, Buffer.from(bytes))
+    if (reuseExisting) downloadedFileCache.set(cacheKey, outputPath)
+    return { filePath: outputPath }
+  })()
+
+  if (reuseExisting) inFlightDownloadTasks.set(cacheKey, downloadTask)
+
+  try {
+    const { filePath } = await downloadTask
+    await openLocalFile(filePath)
+    return { filePath }
+  } finally {
+    if (reuseExisting) inFlightDownloadTasks.delete(cacheKey)
+  }
+}
+
+async function downloadCourseResources(payload: {
+  targetDirectory: string
+  courseName: string
+  courseCode: string
+  resources: CourseDownloadResource[]
+}) {
+  const targetDirectory = payload.targetDirectory?.trim()
+  if (!targetDirectory) throw new Error('下载目录为空')
+  const resources = Array.isArray(payload.resources) ? payload.resources : []
+  if (!resources.length) throw new Error('没有可下载的课件资源')
+
+  const courseFolderName = sanitizeFilename(
+    [payload.courseCode, payload.courseName].filter(Boolean).join(' - ') || 'Moodle Course',
+  )
+  const courseDir = path.join(targetDirectory, courseFolderName)
+  await ensureDirectory(courseDir)
+
+  const results: Array<{
+    filename: string
+    filePath: string | null
+    ok: boolean
+    error?: string
+  }> = []
+
+  for (const resource of resources) {
+    const sectionName = sanitizeFilename(resource.sectionName || 'Uncategorized')
+    const sectionDir = path.join(courseDir, sectionName)
+    await ensureDirectory(sectionDir)
+    const filename = sanitizeFilename(resource.filename || path.basename(new URL(resource.fileurl).pathname) || 'resource')
+    try {
+      const response = await net.fetch(resource.fileurl, { method: 'GET' })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const outputPath = await pickAvailablePath(sectionDir, filename)
+      const bytes = await response.arrayBuffer()
+      await writeFile(outputPath, Buffer.from(bytes))
+      results.push({ filename, filePath: outputPath, ok: true })
+    } catch (error) {
+      results.push({
+        filename,
+        filePath: null,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return {
+    courseDir,
+    total: resources.length,
+    succeeded: results.filter((item) => item.ok).length,
+    failed: results.filter((item) => !item.ok).length,
+    results,
+  }
 }
 
 const isStudentsNotReadyError = (message: string) => {
@@ -98,6 +244,70 @@ function ensureServices() {
     throw new Error('服务尚未初始化')
   }
   return { dashboardDb, moodleService, studentsService }
+}
+
+function ensureNotebookService() {
+  if (!notebookService) throw new Error('Notebook service is not ready')
+  return notebookService
+}
+
+function normalizeNotebookCourse(course: NotebookCourse): NotebookCourse {
+  if (!course?.courseKey?.trim()) throw new Error('Invalid course key')
+  const courseKey = course.courseKey.trim()
+  const courseCode = course.courseCode?.trim() || courseKey
+  const courseName = course.courseName?.trim() || courseCode
+  return { courseKey, courseCode, courseName }
+}
+
+function normalizePreferences(raw: unknown): AppPreferences {
+  const obj = raw && typeof raw === 'object' ? raw as Partial<AppPreferences> : {}
+  const language: Language = obj.language === 'en-US' ? 'en-US' : 'zh-CN'
+  const themeMode: ThemeMode = obj.themeMode === 'light' || obj.themeMode === 'dark' || obj.themeMode === 'system'
+    ? obj.themeMode
+    : 'system'
+  const autoSyncIntervalHours: AutoSyncIntervalHours = obj.autoSyncIntervalHours === 0 || obj.autoSyncIntervalHours === 6 || obj.autoSyncIntervalHours === 24
+    ? obj.autoSyncIntervalHours
+    : 24
+  const downloadDirectory = typeof obj.downloadDirectory === 'string' && obj.downloadDirectory.trim()
+    ? obj.downloadDirectory.trim()
+    : null
+  return {
+    ...DEFAULT_PREFERENCES,
+    language,
+    themeMode,
+    autoSyncIntervalHours,
+    downloadDirectory,
+  }
+}
+
+function getAppPreferences() {
+  const value = ensureServices().dashboardDb.getMetaValue(PREF_KEY)
+  return normalizePreferences(value)
+}
+
+function updateAppPreferences(patch: Partial<AppPreferences>) {
+  const merged = normalizePreferences({ ...getAppPreferences(), ...patch })
+  ensureServices().dashboardDb.setMeta(PREF_KEY, merged)
+  return merged
+}
+
+function getDownloadBaseDir() {
+  const pref = getAppPreferences()
+  return pref.downloadDirectory || app.getPath('downloads')
+}
+
+function getPreviewCacheDir() {
+  return path.join(getDownloadBaseDir(), DOWNLOAD_CACHE_SUBDIR)
+}
+
+async function ensureDirectory(dirPath: string) {
+  await mkdir(dirPath, { recursive: true })
+}
+
+function getAutoSyncIntervalMs() {
+  const hours = getAppPreferences().autoSyncIntervalHours
+  if (!hours) return null
+  return hours * 60 * 60 * 1000
 }
 
 function createWindow() {
@@ -144,6 +354,100 @@ function registerIpcHandlers() {
     return `pong from main: ${payload} @ ${new Date().toLocaleString()}`
   })
   handle('app:platform', () => process.platform)
+  handle('app:get-version', () => app.getVersion())
+  handle('app:preferences:get', () => getAppPreferences())
+  handle('app:preferences:update', (_event, payload?: Partial<AppPreferences>) => {
+    if (!payload || typeof payload !== 'object') return getAppPreferences()
+    return updateAppPreferences(payload)
+  })
+
+  handle('notebook:course:get', (_event, payload: { course: NotebookCourse }) => {
+    return ensureNotebookService().getCourse({ course: normalizeNotebookCourse(payload.course) })
+  })
+  handle('notebook:note:create-markdown', (_event, payload: { course: NotebookCourse; title: string }) => {
+    return ensureNotebookService().createMarkdown({
+      course: normalizeNotebookCourse(payload.course),
+      title: payload.title,
+    })
+  })
+  handle('notebook:note:import-html', (_event, payload: { course: NotebookCourse; filePath: string }) => {
+    return ensureNotebookService().importHtml({
+      course: normalizeNotebookCourse(payload.course),
+      filePath: payload.filePath,
+    })
+  })
+  handle('notebook:notes:import-html', (_event, payload: { course: NotebookCourse; filePaths: string[] }) => {
+    return ensureNotebookService().importHtmlFiles({
+      course: normalizeNotebookCourse(payload.course),
+      filePaths: Array.isArray(payload.filePaths) ? payload.filePaths : [],
+    })
+  })
+  handle('notebook:notes:import-html-directory', (_event, payload: { course: NotebookCourse; directory: string }) => {
+    return ensureNotebookService().importHtmlDirectory({
+      course: normalizeNotebookCourse(payload.course),
+      directory: payload.directory,
+    })
+  })
+  handle('notebook:note:read', (_event, payload: { course: NotebookCourse; noteId: string }) => {
+    return ensureNotebookService().readNote({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+    })
+  })
+  handle('notebook:note:save-markdown', (_event, payload: { course: NotebookCourse; noteId: string; title: string; source: string }) => {
+    return ensureNotebookService().saveMarkdown({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+      title: payload.title,
+      source: payload.source,
+    })
+  })
+  handle('notebook:note:render', (_event, payload: { course: NotebookCourse; noteId: string }) => {
+    return ensureNotebookService().renderNote({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+    })
+  })
+  handle('notebook:course:render', (_event, payload: { course: NotebookCourse }) => {
+    return ensureNotebookService().renderCourse({ course: normalizeNotebookCourse(payload.course) })
+  })
+  handle('notebook:note:rename', (_event, payload: { course: NotebookCourse; noteId: string; title: string }) => {
+    return ensureNotebookService().renameNote({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+      title: payload.title,
+    })
+  })
+  handle('notebook:note:delete', (_event, payload: { course: NotebookCourse; noteId: string }) => {
+    return ensureNotebookService().deleteNote({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+    })
+  })
+  handle('notebook:sources:sync', (_event, payload: { course: NotebookCourse; noteIds?: string[] }) => {
+    return ensureNotebookService().syncSources({
+      course: normalizeNotebookCourse(payload.course),
+      noteIds: payload.noteIds,
+    })
+  })
+  handle('notebook:notes:reorder', (_event, payload: { course: NotebookCourse; noteIds: string[] }) => {
+    return ensureNotebookService().reorderNotes({
+      course: normalizeNotebookCourse(payload.course),
+      noteIds: payload.noteIds,
+    })
+  })
+  handle('notebook:note:open', (_event, payload: { course: NotebookCourse; noteId: string }) => {
+    return ensureNotebookService().openNote({
+      course: normalizeNotebookCourse(payload.course),
+      noteId: payload.noteId,
+    })
+  })
+  handle('notebook:course:open', (_event, payload: { course: NotebookCourse }) => {
+    return ensureNotebookService().openCourse({ course: normalizeNotebookCourse(payload.course) })
+  })
+  handle('notebook:course:open-folder', (_event, payload: { course: NotebookCourse }) => {
+    return ensureNotebookService().openCourseFolder({ course: normalizeNotebookCourse(payload.course) })
+  })
 
   handle('moodle:login', (_event, payload: { username: string; password: string; rememberPassword?: boolean }) => {
     return ensureServices().moodleService.login(payload)
@@ -321,7 +625,7 @@ function registerIpcHandlers() {
   handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {
     if (!payload?.url) throw new Error('文件链接为空')
     if (shouldDownloadDirectly(payload.url)) {
-      await downloadAndOpenRemoteFile(payload.url, payload.title)
+      await downloadAndOpenRemoteFile(payload.url, payload.title, { reuseExisting: true })
       return true
     }
     // Some Moodle instances still respond with attachment content-disposition
@@ -334,7 +638,7 @@ function registerIpcHandlers() {
         const isAttachment = contentDisposition.includes('attachment')
         const isPdf = contentType.includes('pdf')
         if (isAttachment || (contentType && !isPdf)) {
-          await downloadAndOpenRemoteFile(payload.url, payload.title)
+          await downloadAndOpenRemoteFile(payload.url, payload.title, { reuseExisting: true })
           return true
         }
       }
@@ -358,6 +662,43 @@ function registerIpcHandlers() {
     if (!url) throw new Error('下载链接为空')
     return downloadAndOpenRemoteFile(url, payload?.filename)
   })
+  handle('file:download-course-resources', async (_event, payload: {
+    targetDirectory: string
+    courseName: string
+    courseCode: string
+    resources: CourseDownloadResource[]
+  }) => {
+    return downloadCourseResources(payload)
+  })
+  handle('file:get-download-directory', () => getDownloadBaseDir())
+  handle('file:set-download-directory', async (_event, payload: { directory: string | null }) => {
+    const directory = typeof payload?.directory === 'string' && payload.directory.trim()
+      ? payload.directory.trim()
+      : null
+    if (directory) await ensureDirectory(directory)
+    const next = updateAppPreferences({ downloadDirectory: directory })
+    return {
+      directory: next.downloadDirectory || app.getPath('downloads'),
+      isDefault: !next.downloadDirectory,
+    }
+  })
+  handle('file:clear-preview-cache', async () => {
+    const cacheDir = getPreviewCacheDir()
+    let removed = 0
+    try {
+      const entries = await readdir(cacheDir, { withFileTypes: true })
+      await Promise.all(entries.map(async (entry) => {
+        const fullPath = path.join(cacheDir, entry.name)
+        await rm(fullPath, { recursive: true, force: true })
+        removed += 1
+      }))
+    } catch {
+      removed = 0
+    }
+    downloadedFileCache.clear()
+    inFlightDownloadTasks.clear()
+    return { removed }
+  })
 
   // ── File dialog ───────────────────────────────────────────────────────────
   handle('dialog:open-file', async (_event, options?: Electron.OpenDialogOptions) => {
@@ -366,6 +707,40 @@ function registerIpcHandlers() {
       properties: ['openFile', 'multiSelections'],
       ...options,
     })
+  })
+  handle('dialog:open-directory', async (_event, options?: Electron.OpenDialogOptions) => {
+    if (!win) return { canceled: true, filePaths: [] }
+    return dialog.showOpenDialog(win, {
+      properties: ['openDirectory', 'createDirectory'],
+      ...options,
+    })
+  })
+
+  handle('updater:check-now', async () => {
+    if (VITE_DEV_SERVER_URL) {
+      return {
+        status: 'disabled',
+        message: '开发模式下不可检查更新',
+        currentVersion: app.getVersion(),
+      }
+    }
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      const nextVersion = result?.updateInfo?.version ?? app.getVersion()
+      const hasUpdate = nextVersion !== app.getVersion()
+      return {
+        status: hasUpdate ? 'available' : 'up-to-date',
+        message: hasUpdate ? `发现新版本 v${nextVersion}` : '当前已是最新版本',
+        currentVersion: app.getVersion(),
+        nextVersion,
+      }
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        currentVersion: app.getVersion(),
+      }
+    }
   })
 
   // Window controls
@@ -443,6 +818,8 @@ function setupAutoUpdater() {
 
 async function runAutoSyncIfDue() {
   if (autoSyncRunning) return
+  const intervalMs = getAutoSyncIntervalMs()
+  if (!intervalMs) return
   const { dashboardDb, moodleService, studentsService } = ensureServices()
   if (!moodleService.hasActiveSession()) return
   const lastAuto = dashboardDb.getMetaValue('sync:auto:last') as { at?: string } | null
@@ -450,7 +827,7 @@ async function runAutoSyncIfDue() {
   const lastAt = [lastAuto?.at, lastMoodle?.at]
     .map((value) => (value ? new Date(value).getTime() : 0))
     .reduce((max, current) => (current > max ? current : max), 0)
-  if (lastAt && Date.now() - lastAt < ONE_DAY_MS) return
+  if (lastAt && Date.now() - lastAt < intervalMs) return
 
   autoSyncRunning = true
   try {
@@ -502,6 +879,7 @@ app.whenReady().then(() => {
   dashboardDb = new DashboardDb(dbPath)
   moodleService = new MoodleService(dashboardDb)
   studentsService = new StudentsService(dashboardDb, () => win)
+  notebookService = new NotebookService(path.join(app.getPath('userData'), 'course-notes'))
   studentsService.installRequestSniffer()
 
   registerIpcHandlers()
@@ -514,4 +892,3 @@ app.whenReady().then(() => {
 }).catch((error) => {
   console.error('[main] app init failed:', error)
 })
-

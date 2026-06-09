@@ -89,18 +89,14 @@ const uploadSelectedFile = async (index: number): Promise<void> => {
   }
 }
 
-const handleSelectFiles = async (): Promise<void> => {
-  const result = await window.electronAPI.dialogOpenFile({
-    title: 'Select files to submit',
-    filters: [{ name: 'All Files', extensions: ['*'] }],
-  })
-  if (result.canceled || !result.filePaths.length) return
-
+const appendFilePaths = (filePaths: string[]): void => {
   const maxFiles = submissionAssignment.value?.maxFileSubmissions ?? 1
-  const currentCount = selectedFiles.value.length
+  if (!filePaths.length) return
 
-  for (const filePath of result.filePaths) {
-    if (currentCount + selectedFiles.value.length >= maxFiles) {
+  for (const rawPath of filePaths) {
+    const filePath = rawPath.trim()
+    if (!filePath) continue
+    if (selectedFiles.value.length >= maxFiles) {
       notifyWarning(`最多允许上传 ${maxFiles} 个文件`, '文件数量限制')
       break
     }
@@ -120,6 +116,19 @@ const handleSelectFiles = async (): Promise<void> => {
     const fileIndex = selectedFiles.value.length - 1
     void uploadSelectedFile(fileIndex)
   }
+}
+
+const handleSelectFiles = async (): Promise<void> => {
+  const result = await window.electronAPI.dialogOpenFile({
+    title: 'Select files to submit',
+    filters: [{ name: 'All Files', extensions: ['*'] }],
+  })
+  if (result.canceled || !result.filePaths.length) return
+  appendFilePaths(result.filePaths)
+}
+
+const handleAddLocalFiles = (filePaths: string[]): void => {
+  appendFilePaths(filePaths)
 }
 
 const handleRemoveFile = (index: number): void => {
@@ -191,6 +200,7 @@ export function useSubmission() {
     totalSelectedSize,
     openSubmission,
     handleSelectFiles,
+    handleAddLocalFiles,
     handleRemoveFile,
     handleSubmit,
     clearSubmission,

@@ -44,12 +44,132 @@ type MoodleSection = {
   }>
 }
 
+type ThemeMode = 'light' | 'dark' | 'system'
+type Language = 'zh-CN' | 'en-US'
+type AutoSyncIntervalHours = 0 | 6 | 24
+type AppPreferences = {
+  language: Language
+  themeMode: ThemeMode
+  autoSyncIntervalHours: AutoSyncIntervalHours
+  downloadDirectory: string | null
+}
+
+type NotebookCourse = {
+  courseKey: string
+  courseCode: string
+  courseName: string
+}
+
+type NotebookItem = {
+  id: string
+  title: string
+  file: string
+  htmlFile: string
+  sourceType: 'markdown' | 'html-import' | 'richtext'
+  editor: 'markdown' | 'external-html' | 'richtext'
+  importMode?: 'copy' | 'mirror'
+  sourcePath?: string
+  sourceDir?: string
+  syncedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+type NotebookIndex = {
+  version: 1
+  course: NotebookCourse
+  items: NotebookItem[]
+  updatedAt: string
+}
+
 const electronAPI = {
   ping(message: string) {
     return ipcRenderer.invoke('ipc-test:ping', message)
   },
   appPlatform() {
     return ipcRenderer.invoke('app:platform') as Promise<string>
+  },
+  appVersion() {
+    return ipcRenderer.invoke('app:get-version') as Promise<string>
+  },
+  appPreferencesGet() {
+    return ipcRenderer.invoke('app:preferences:get') as Promise<AppPreferences>
+  },
+  appPreferencesUpdate(payload: Partial<AppPreferences>) {
+    return ipcRenderer.invoke('app:preferences:update', payload) as Promise<AppPreferences>
+  },
+  notebookCourseGet(payload: { course: NotebookCourse }) {
+    return ipcRenderer.invoke('notebook:course:get', payload) as Promise<{
+      index: NotebookIndex
+      courseDir: string
+    }>
+  },
+  notebookCreateMarkdown(payload: { course: NotebookCourse; title: string }) {
+    return ipcRenderer.invoke('notebook:note:create-markdown', payload) as Promise<NotebookItem>
+  },
+  notebookImportHtml(payload: { course: NotebookCourse; filePath: string }) {
+    return ipcRenderer.invoke('notebook:note:import-html', payload) as Promise<NotebookItem>
+  },
+  notebookImportHtmlFiles(payload: { course: NotebookCourse; filePaths: string[] }) {
+    return ipcRenderer.invoke('notebook:notes:import-html', payload) as Promise<{
+      items: NotebookItem[]
+      copiedAssets: string[]
+    }>
+  },
+  notebookImportHtmlDirectory(payload: { course: NotebookCourse; directory: string }) {
+    return ipcRenderer.invoke('notebook:notes:import-html-directory', payload) as Promise<{
+      items: NotebookItem[]
+      copiedAssets: string[]
+    }>
+  },
+  notebookReadNote(payload: { course: NotebookCourse; noteId: string }) {
+    return ipcRenderer.invoke('notebook:note:read', payload) as Promise<{
+      item: NotebookItem
+      source: string
+      html: string
+    }>
+  },
+  notebookSaveMarkdown(payload: { course: NotebookCourse; noteId: string; title: string; source: string }) {
+    return ipcRenderer.invoke('notebook:note:save-markdown', payload) as Promise<{
+      item: NotebookItem
+      html: string
+    }>
+  },
+  notebookRenderNote(payload: { course: NotebookCourse; noteId: string }) {
+    return ipcRenderer.invoke('notebook:note:render', payload) as Promise<string>
+  },
+  notebookRenderCourse(payload: { course: NotebookCourse }) {
+    return ipcRenderer.invoke('notebook:course:render', payload) as Promise<{
+      html: string
+      filePath: string
+    }>
+  },
+  notebookRenameNote(payload: { course: NotebookCourse; noteId: string; title: string }) {
+    return ipcRenderer.invoke('notebook:note:rename', payload) as Promise<NotebookItem>
+  },
+  notebookDeleteNote(payload: { course: NotebookCourse; noteId: string }) {
+    return ipcRenderer.invoke('notebook:note:delete', payload) as Promise<NotebookIndex>
+  },
+  notebookSyncSources(payload: { course: NotebookCourse; noteIds?: string[] }) {
+    return ipcRenderer.invoke('notebook:sources:sync', payload) as Promise<{
+      index: NotebookIndex
+      synced: number
+      skipped: number
+      missing: Array<{ id: string; title: string; sourcePath: string }>
+      copiedAssets: string[]
+    }>
+  },
+  notebookReorderNotes(payload: { course: NotebookCourse; noteIds: string[] }) {
+    return ipcRenderer.invoke('notebook:notes:reorder', payload) as Promise<NotebookIndex>
+  },
+  notebookOpenNote(payload: { course: NotebookCourse; noteId: string }) {
+    return ipcRenderer.invoke('notebook:note:open', payload) as Promise<boolean>
+  },
+  notebookOpenCourse(payload: { course: NotebookCourse }) {
+    return ipcRenderer.invoke('notebook:course:open', payload) as Promise<boolean>
+  },
+  notebookOpenCourseFolder(payload: { course: NotebookCourse }) {
+    return ipcRenderer.invoke('notebook:course:open-folder', payload) as Promise<boolean>
   },
   onMainMessage(callback: (message: string) => void) {
     const listener = (_event: Electron.IpcRendererEvent, message: string) => callback(message)
@@ -133,7 +253,7 @@ const electronAPI = {
         status: string
         canSubmit: boolean
         canEdit: boolean
-        submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+        submittedFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype?: string }>
         gradeText: string | null
         gradedAt: number | null
         grader: { id: number; fullName: string; email: string | null } | null
@@ -165,7 +285,7 @@ const electronAPI = {
       status: string
       canSubmit: boolean
       canEdit: boolean
-      submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+      submittedFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype?: string }>
       gradeText: string | null
       gradedAt: number | null
       grader: { id: number; fullName: string; email: string | null } | null
@@ -188,10 +308,55 @@ const electronAPI = {
   downloadAndOpenFile(payload: { url: string; filename?: string }) {
     return ipcRenderer.invoke('file:download-open', payload) as Promise<{ filePath: string }>
   },
+  downloadCourseResources(payload: {
+    targetDirectory: string
+    courseName: string
+    courseCode: string
+    resources: Array<{
+      sectionName: string
+      moduleName: string
+      filename: string
+      fileurl: string
+    }>
+  }) {
+    return ipcRenderer.invoke('file:download-course-resources', payload) as Promise<{
+      courseDir: string
+      total: number
+      succeeded: number
+      failed: number
+      results: Array<{ filename: string; filePath: string | null; ok: boolean; error?: string }>
+    }>
+  },
+  getDownloadDirectory() {
+    return ipcRenderer.invoke('file:get-download-directory') as Promise<string>
+  },
+  setDownloadDirectory(payload: { directory: string | null }) {
+    return ipcRenderer.invoke('file:set-download-directory', payload) as Promise<{
+      directory: string
+      isDefault: boolean
+    }>
+  },
+  clearPreviewCache() {
+    return ipcRenderer.invoke('file:clear-preview-cache') as Promise<{ removed: number }>
+  },
   dialogOpenFile(options?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) {
     return ipcRenderer.invoke('dialog:open-file', options) as Promise<{
       canceled: boolean
       filePaths: string[]
+    }>
+  },
+  dialogOpenDirectory(options?: { title?: string }) {
+    return ipcRenderer.invoke('dialog:open-directory', options) as Promise<{
+      canceled: boolean
+      filePaths: string[]
+    }>
+  },
+  updaterCheckNow() {
+    return ipcRenderer.invoke('updater:check-now') as Promise<{
+      status: 'disabled' | 'available' | 'up-to-date' | 'error'
+      message: string
+      currentVersion: string
+      nextVersion?: string
     }>
   },
   studentsAuthenticate() {
@@ -206,7 +371,7 @@ const electronAPI = {
       currentUrl: string
       semester: string
       semesterTechnion: string
-      courses: Array<{ name: string; code: string; credits: number }>
+      courses: Array<{ name: string; code: string; credits: number; grade: string | null }>
       exams: Array<{
         code: string
         course: string
@@ -250,6 +415,7 @@ const electronAPI = {
         semesterLabel: string
         semesterTechnion: string
         credits: number | null
+        grade: string | null
         moodleCourseId: number | null
         hasMoodle: boolean
         hasStudents: boolean
@@ -315,7 +481,7 @@ const electronAPI = {
         currentUrl: string
         semester: string
         semesterTechnion: string
-        courses: Array<{ name: string; code: string; credits: number }>
+        courses: Array<{ name: string; code: string; credits: number; grade: string | null }>
         exams: Array<{
           code: string
           course: string

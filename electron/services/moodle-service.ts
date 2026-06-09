@@ -30,6 +30,7 @@ type MoodleCourse = {
   shortname: string
   progress?: number | null
   hidden?: boolean
+  visible?: number | boolean
 }
 
 type MoodleSection = {
@@ -51,10 +52,6 @@ type MoodleSection = {
       isexternalfile?: boolean
     }>
   }>
-}
-
-type MoodleTimelineCourses = {
-  courses: MoodleCourse[]
 }
 
 type MoodleCalendarEvent = {
@@ -180,7 +177,7 @@ export type SubmissionStatus = {
   status: string
   canSubmit: boolean
   canEdit: boolean
-  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string }>
+  submittedFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype?: string }>
   gradeText: string | null
   gradedAt: number | null
   grader: { id: number; fullName: string; email: string | null } | null
@@ -196,7 +193,7 @@ export type UploadedFile = {
 const MOODLE_BASE = 'https://moodle.gtiit.edu.cn/moodle'
 const MOODLE_TOKEN_URL = `${MOODLE_BASE}/login/token.php`
 const MOODLE_WS_URL = `${MOODLE_BASE}/webservice/rest/server.php`
-const TERM_REGEX = /(Spring|Summer|Fall|Winter)\s+(\d{4})/i
+const TERM_REGEX = /(Spring|Sping|Summer|Fall|Winter)\s+(\d{4})/i
 
 export class MoodleService {
   private appStore: Store<PersistedState>
@@ -216,26 +213,40 @@ export class MoodleService {
   private extractTermLabel(name: string) {
     const hit = name.match(TERM_REGEX)
     if (!hit) return ''
-    const season = hit[1].charAt(0).toUpperCase() + hit[1].slice(1).toLowerCase()
+    const normalizedSeason = hit[1].toLowerCase() === 'sping' ? 'Spring' : hit[1]
+    const season = normalizedSeason.charAt(0).toUpperCase() + normalizedSeason.slice(1).toLowerCase()
     return `${season} ${hit[2]}`
   }
 
-  private pickCurrentTermCourses(courses: MoodleCourse[]) {
-    const visible = courses.filter((course) => !course.hidden)
+  private termSortScore(termLabel: string) {
+    const hit = termLabel.match(TERM_REGEX)
+    if (!hit) return -1
+    const season = hit[1].toLowerCase()
+    const year = Number.parseInt(hit[2], 10)
+    const seasonOrder = season === 'spring'
+      ? 1
+      : season === 'summer'
+        ? 2
+        : season === 'fall'
+          ? 3
+          : 4
+    return year * 10 + seasonOrder
+  }
+
+  private pickDominantTermLabel(courses: MoodleCourse[]) {
     const termCounter = new Map<string, number>()
-    visible.forEach((course) => {
+    courses.forEach((course) => {
       const term = this.extractTermLabel(course.fullname)
       if (term) {
         termCounter.set(term, (termCounter.get(term) ?? 0) + 1)
       }
     })
+    return [...termCounter.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+  }
 
-    const dominantTerm = [...termCounter.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-    if (!dominantTerm) {
-      return { termLabel: '', courses: visible }
-    }
-    const filtered = visible.filter((course) => this.extractTermLabel(course.fullname) === dominantTerm)
-    return { termLabel: dominantTerm, courses: filtered.length ? filtered : visible }
+  private pickVisibleCourses(courses: MoodleCourse[]) {
+    const visible = courses.filter((course) => !course.hidden)
+    return visible.filter((course) => !(typeof course.visible === 'number' && course.visible === 0))
   }
 
   private withToken(fileUrl: string, token: string) {
@@ -398,20 +409,25 @@ export class MoodleService {
   async sync(payload?: { username?: string }) {
     const session = this.ensureSession(payload?.username)
     const siteInfo = await this.callMoodleWs<MoodleSiteInfo>('core_webservice_get_site_info', session.token)
-    const timeline = await this.callMoodleWs<MoodleTimelineCourses>(
-      'core_course_get_enrolled_courses_by_timeline_classification',
+    const allCourses = await this.callMoodleWs<MoodleCourse[]>(
+      'core_enrol_get_users_courses',
       session.token,
-      { classification: 'inprogress', limit: 100, offset: 0, sort: 'fullname' },
+      { userid: siteInfo.userid },
     )
-    const { termLabel, courses } = this.pickCurrentTermCourses(timeline.courses ?? [])
+    const courses = this.pickVisibleCourses(allCourses ?? [])
+    const termLabel = this.pickDominantTermLabel(courses)
     const normalizedCourses = courses.map((course) => ({
       id: course.id,
       fullname: course.fullname,
       shortname: course.shortname,
+      semesterLabel: this.extractTermLabel(course.fullname),
       progress: course.progress ?? null,
     }))
+    normalizedCourses.sort(
+      (a, b) => this.termSortScore(a.semesterLabel) - this.termSortScore(b.semesterLabel) || a.id - b.id,
+    )
 
-    const delta = this.db.upsertMoodleCourses(termLabel, normalizedCourses)
+    const delta = this.db.upsertMoodleCourses(normalizedCourses)
     this.db.setMeta('sync:moodle:last', {
       at: new Date().toISOString(),
       username: siteInfo.username,
@@ -946,6 +962,7 @@ export class MoodleService {
         filename: f.filename,
         filesize: f.filesize,
         fileurl: this.withToken(f.fileurl, token),
+        mimetype: f.mimetype ?? '',
       })),
       gradeText,
       gradedAt,
@@ -1221,4 +1238,3 @@ export class MoodleService {
     return true
   }
 }
-

@@ -2,6 +2,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import type { MoodleProfile, MoodleUser, UsernameSuggestion } from '../types'
 
 export const SESSION_LOGIN_USER_KEY = 'campus-dashboard:login-user'
+const AUTO_SSO_LOGIN_KEY = 'campus-dashboard:auto-sso-login'
+const LAST_LOGIN_USERNAME_KEY = 'campus-dashboard:last-login-username'
 
 // Module-level shared state (singleton across all callers)
 export const user = ref<MoodleUser | null>(null)
@@ -9,6 +11,7 @@ const loginForm = reactive({ username: '', password: '' })
 const rememberPassword = ref(false)
 const profiles = ref<MoodleProfile[]>([])
 const loggingIn = ref(false)
+const autoSsoLogin = ref(localStorage.getItem(AUTO_SSO_LOGIN_KEY) === '1')
 
 const userInitial = computed(() => {
   const name = user.value?.fullName ?? ''
@@ -53,6 +56,25 @@ const handlePickProfile = async (item: Record<string, unknown>): Promise<void> =
   if (profile.hasRememberedPassword) {
     await fillRememberedPassword(profile.username)
   }
+}
+
+const saveLastLoginUsername = (username: string): void => {
+  const normalized = username.trim()
+  if (!normalized) return
+  localStorage.setItem(LAST_LOGIN_USERNAME_KEY, normalized)
+}
+
+const hydrateRememberedLogin = async (): Promise<void> => {
+  if (loginForm.username.trim()) return
+  const lastUsername = localStorage.getItem(LAST_LOGIN_USERNAME_KEY)?.trim()
+  if (!lastUsername) return
+  loginForm.username = lastUsername
+  await fillRememberedPassword(lastUsername)
+}
+
+const setAutoSsoLogin = (enabled: boolean): void => {
+  autoSsoLogin.value = enabled
+  localStorage.setItem(AUTO_SSO_LOGIN_KEY, enabled ? '1' : '0')
 }
 
 const saveSession = (u: MoodleUser): void => {
@@ -101,11 +123,15 @@ export function useAuth() {
     rememberPassword,
     profiles,
     loggingIn,
+    autoSsoLogin,
     userInitial,
     loadProfiles,
     querySearchProfiles,
     fillRememberedPassword,
     handlePickProfile,
+    saveLastLoginUsername,
+    hydrateRememberedLogin,
+    setAutoSsoLogin,
     saveSession,
     restoreSession,
     clearSession,

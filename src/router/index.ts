@@ -15,6 +15,12 @@ const routes: RouteRecordRaw[] = [
     // this route registration makes the URL meaningful and supports browser history.
     component: { template: '<div />' },
   },
+  {
+    path: '/settings',
+    name: 'settings',
+    // Actual rendering is handled by App.vue via appStage='settings'.
+    component: { template: '<div />' },
+  },
 ]
 
 const router = createRouter({

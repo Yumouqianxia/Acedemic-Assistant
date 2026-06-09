@@ -6,8 +6,14 @@ const STUDENTS_API_BASE = 'https://slcm-rp.gtiit.edu.cn/UGDBrestApi/api/Students
 const STUDENTS_PARTITION = 'persist:students'
 const SYNC_READY_MAX_RETRIES = 8
 const SYNC_READY_RETRY_MS = 600
+const GRADE_REQUEST_INTERVAL_MS = 1400
+const GRADE_SEMESTER_SETTLE_MS = 4500
+const GRADE_RETRY_BASE_MS = 2500
+const GRADE_THROTTLE_BASE_MS = 12000
+const GRADE_MAX_RETRIES = 2
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const jitter = (ms: number) => ms + Math.floor(Math.random() * Math.max(250, Math.round(ms * 0.25)))
 const now = () => Date.now()
 const elapsed = (start: number) => `${Date.now() - start}ms`
 const syncTrace = () => `students-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
@@ -408,6 +414,9 @@ export class StudentsService {
               enrollments: toRelative(pick('enrollments')),
               exams: toRelative(pick('exams')),
               profile: toRelative(pick('profile')),
+              grades: toRelative(pick('grades')),
+              coursegrades: toRelative(pick('coursegrades')),
+              transcripts: toRelative(pick('transcripts')),
             };
           } catch (err) {
             return { ok: false, error: err && err.message ? String(err.message) : String(err) };
@@ -421,6 +430,9 @@ export class StudentsService {
         enrollments?: string
         exams?: string
         profile?: string
+        grades?: string
+        coursegrades?: string
+        transcripts?: string
         error?: string
       }>
 
@@ -599,7 +611,7 @@ export class StudentsService {
 
       const dataFetchStarted = now()
       const [enrollmentsResp, examsResp, profileResp] = await Promise.all([
-        requestFirstOk<Array<{ semesterTechnion: string; courseName: string; courseCode: string; credit: string }>>([
+        requestFirstOk<Array<Record<string, unknown>>>([
           endpointMeta.enrollments || '',
           `${apiBase}/enrollments?${buildQuery({ sid, v: version })}`,
           `${apiBase}/enrollments`,
@@ -639,14 +651,194 @@ export class StudentsService {
       const exams = Array.isArray(examsResp.data) ? examsResp.data : []
       const profile = profileResp.data && typeof profileResp.data === 'object' ? profileResp.data : null
 
-      const currentCourses = enrollments
-        .filter((item) => text(item.semesterTechnion) === text(semesterTechnion))
-        .map((item) => ({
-          name: text(item.courseName),
-          code: text(item.courseCode),
-          credits: Number(item.credit || 0),
-        }))
-        .filter((item, idx, arr) => idx === arr.findIndex((x) => x.code === item.code))
+      const semesterLabelMap = new Map(
+        semesters.map((item) => [text(item.semesterTechnion), text(item.semesterName)]),
+      )
+      const gradeByCourseAndSemester = new Map<string, string>()
+
+      const pickGradeValue = (rows: Array<Record<string, unknown>>) => {
+        const candidates = rows
+          .map((row, index) => {
+            const gradeValue = text(
+              row.finalGrade
+              || row.finalgrade
+              || row.grade
+              || row.score
+              || row.result
+              || row.finalResult
+              || row.finalresult
+              || row.totalScore
+              || row.totalscore
+              || row.mark
+              || row.letterGrade
+              || row.lettergrade,
+            )
+            if (!gradeValue) return null
+            const takeRaw = text(row.take || row.attempt || row.examSession)
+            const takeNum = /^\d+$/.test(takeRaw) ? Number.parseInt(takeRaw, 10) : -1
+            const updatedText = text(row.lastUpdateDate || row.lastupdatedate || row.updatedAt || row.updated_at)
+            const updatedAt = updatedText ? Date.parse(updatedText) : Number.NaN
+            return {
+              gradeValue,
+              takeNum,
+              updatedAt,
+              index,
+            }
+          })
+          .filter((item): item is { gradeValue: string; takeNum: number; updatedAt: number; index: number } => Boolean(item))
+
+        if (!candidates.length) return ''
+
+        const best = candidates.reduce((prev, curr) => {
+          if (curr.takeNum !== prev.takeNum) {
+            return curr.takeNum > prev.takeNum ? curr : prev
+          }
+          const prevTimeValid = Number.isFinite(prev.updatedAt)
+          const currTimeValid = Number.isFinite(curr.updatedAt)
+          if (currTimeValid && !prevTimeValid) return curr
+          if (currTimeValid && prevTimeValid && curr.updatedAt !== prev.updatedAt) {
+            return curr.updatedAt > prev.updatedAt ? curr : prev
+          }
+          return curr.index > prev.index ? curr : prev
+        })
+
+        return best.gradeValue
+      }
+
+      const pickEnrollmentGrade = (item: Record<string, unknown>) => {
+        const gradeCandidates = [
+          item.grade,
+          item.score,
+          item.finalGrade,
+          item.finalgrade,
+          item.totalScore,
+          item.totalscore,
+          item.mark,
+          item.result,
+          item.finalResult,
+          item.finalresult,
+          item.gradeLetter,
+          item.gradeletter,
+          item.gradePoint,
+          item.gradepoint,
+        ]
+        return gradeCandidates
+          .map((candidate) => text(candidate))
+          .find((value) => value !== '') || ''
+      }
+
+      const uniqueCoursePairs = Array.from(new Set(
+        enrollments
+          .filter((item) => !pickEnrollmentGrade(item))
+          .map((item) => `${text(item.courseCode)}__${text(item.semesterTechnion)}`)
+          .filter((key) => !key.startsWith('__')),
+      ))
+
+      let gradesSuccessCount = 0
+      let gradesAttemptCount = 0
+      const courseCodesBySemester = new Map<string, string[]>()
+      for (const pairKey of uniqueCoursePairs) {
+        const [courseCode, rowSemesterTechnion] = pairKey.split('__')
+        if (!courseCode || !rowSemesterTechnion) continue
+        const existing = courseCodesBySemester.get(rowSemesterTechnion) || []
+        if (!existing.includes(courseCode)) existing.push(courseCode)
+        courseCodesBySemester.set(rowSemesterTechnion, existing)
+      }
+
+      const fetchGradeWithRetry = async (
+        rowSemesterTechnion: string,
+        courseCode: string,
+      ): Promise<string> => {
+        const candidates = [
+          `${apiBase}/grades?${buildQuery({ semesterTechnion: rowSemesterTechnion, courseCode, sid, v: version })}`,
+          `${apiBase}/grades?${buildQuery({ semesterTechnion: rowSemesterTechnion, courseCode, sid })}`,
+          `${apiBase}/grades?${buildQuery({ semesterTechnion: rowSemesterTechnion, courseCode })}`,
+        ]
+
+        for (const fullUrl of candidates) {
+          let retry = 0
+          while (retry < GRADE_MAX_RETRIES) {
+            try {
+              const response = await hidden.webContents.session.fetch(fullUrl, {
+                method: 'GET',
+                headers: defaultHeaders,
+              })
+              if (response.ok) {
+                const payload = await response.json() as Array<Record<string, unknown>>
+                const rows = Array.isArray(payload) ? payload : []
+                return pickGradeValue(rows)
+              }
+              // 429/403 often means throttling or temporary blocking.
+              if (response.status === 429 || response.status === 403) {
+                await sleep(jitter(GRADE_THROTTLE_BASE_MS * (retry + 1)))
+                retry += 1
+                continue
+              }
+              break
+            } catch {
+              await sleep(jitter(GRADE_RETRY_BASE_MS * (retry + 1)))
+              retry += 1
+            }
+          }
+        }
+        return ''
+      }
+
+      for (const [rowSemesterTechnion, courseCodes] of courseCodesBySemester.entries()) {
+        console.log(`[students:sync][${trace}] grades fetch semester=${rowSemesterTechnion} courses=${courseCodes.length}`)
+        for (const courseCode of courseCodes) {
+          gradesAttemptCount += 1
+          const gradeValue = await fetchGradeWithRetry(rowSemesterTechnion, courseCode)
+          if (gradeValue) {
+            gradeByCourseAndSemester.set(`${courseCode}__${rowSemesterTechnion}`, gradeValue)
+            gradesSuccessCount += 1
+          }
+          // keep request rate low to reduce anti-bot throttling
+          await sleep(jitter(GRADE_REQUEST_INTERVAL_MS))
+        }
+        // extra settle time between semesters
+        await sleep(jitter(GRADE_SEMESTER_SETTLE_MS))
+      }
+
+      const enrollmentCourses = enrollments
+        .map((item) => {
+          const normalizedGrade = pickEnrollmentGrade(item)
+          const rowSemesterTechnion = text(item.semesterTechnion)
+          const gradeFromGradeEndpoint = gradeByCourseAndSemester.get(
+            `${text(item.courseCode)}__${rowSemesterTechnion}`,
+          )
+          return {
+            name: text(item.courseName),
+            code: text(item.courseCode),
+            credits: Number(item.credit || 0),
+            grade: normalizedGrade || gradeFromGradeEndpoint || null,
+            semesterTechnion: rowSemesterTechnion,
+            semesterLabel: semesterLabelMap.get(rowSemesterTechnion) || semesterName,
+          }
+        })
+        .filter((item) => item.code || item.name)
+
+      const dedupedCourses = new Map<string, (typeof enrollmentCourses)[number]>()
+      for (const item of enrollmentCourses) {
+        const key = `${item.code || item.name}__${item.semesterTechnion}`
+        const existing = dedupedCourses.get(key)
+        if (!existing) {
+          dedupedCourses.set(key, item)
+          continue
+        }
+        // Prefer rows that already contain a concrete grade.
+        if (!existing.grade && item.grade) {
+          dedupedCourses.set(key, item)
+        }
+      }
+      const currentCourses = Array.from(dedupedCourses.values())
+      const gradedCount = currentCourses.filter((item) => Boolean(item.grade)).length
+      const firstEnrollment = enrollments[0]
+      if (firstEnrollment && typeof firstEnrollment === 'object') {
+        console.log(`[students:sync][${trace}] enrollments sample keys: ${Object.keys(firstEnrollment as Record<string, unknown>).join(',')}`)
+      }
+      console.log(`[students:sync][${trace}] grades fetched success=${gradesSuccessCount}/${gradesAttemptCount}`)
+      console.log(`[students:sync][${trace}] courses parsed total=${currentCourses.length} graded=${gradedCount}`)
 
       const normalizedExams = exams.map((item) => ({
         code: text(item.courseCode),
@@ -679,15 +871,14 @@ export class StudentsService {
         capturedAt: new Date().toISOString(),
       }
 
-      const courseDelta = this.db.upsertStudentsCourses(
-        data.semester,
-        data.semesterTechnion,
-        data.courses.map((course) => ({
-          code: course.code,
-          name: course.name,
-          credits: course.credits,
-        })),
-      )
+      const courseDelta = this.db.upsertStudentsCourses(data.courses.map((course) => ({
+        code: course.code,
+        name: course.name,
+        credits: course.credits,
+        grade: course.grade,
+        semesterLabel: course.semesterLabel,
+        semesterTechnion: course.semesterTechnion,
+      })))
       const examDelta = this.db.replaceStudentsExams(
         data.semesterTechnion,
         data.exams.map((exam) => {

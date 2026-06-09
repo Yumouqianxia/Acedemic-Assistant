@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   Back,
   Calendar,
@@ -14,6 +15,7 @@ import {
   ArrowDown,
   ArrowUp,
   FolderOpened,
+  Download,
 } from '@element-plus/icons-vue'
 
 type UnifiedCourse = {
@@ -59,6 +61,7 @@ type MoodleSection = {
 }
 
 const props = defineProps<{
+  backTarget: 'dashboard' | 'course'
   course: UnifiedCourse
   sections: MoodleSection[]
   loading: boolean
@@ -71,6 +74,18 @@ const emit = defineEmits<{
 }>()
 
 const collapsedSections = ref(new Set<number>())
+const downloadingResources = ref(false)
+const selectedResourceKeys = ref(new Set<string>())
+
+type DownloadableResource = {
+  key: string
+  sectionId: number
+  sectionName: string
+  moduleId: number
+  moduleName: string
+  filename: string
+  fileurl: string
+}
 
 const toggleSection = (id: number) => {
   if (collapsedSections.value.has(id)) {
@@ -128,6 +143,138 @@ const openUrl = (url: string) => {
 const visibleSections = computed(() =>
   props.sections.filter((s) => s.modules.length > 0),
 )
+
+const makeResourceKey = (
+  section: MoodleSection,
+  mod: MoodleSection['modules'][number],
+  resource: MoodleSection['modules'][number]['resources'][number],
+) => `${section.id}:${mod.id}:${resource.fileurl || resource.filename}`
+
+const downloadableResources = computed(() =>
+  props.sections.flatMap((section) =>
+    section.modules.flatMap((mod) =>
+      mod.resources.map((resource) => ({
+        key: makeResourceKey(section, mod, resource),
+        sectionId: section.id,
+        sectionName: section.name || 'Uncategorized',
+        moduleId: mod.id,
+        moduleName: mod.name || resource.filename,
+        filename: resource.filename || mod.name,
+        fileurl: resource.fileurl,
+      })),
+    ),
+  ),
+)
+
+watch(() => props.course.courseKey, () => {
+  selectedResourceKeys.value = new Set()
+})
+
+watch(downloadableResources, (resources) => {
+  const availableKeys = new Set(resources.map((resource) => resource.key))
+  const next = new Set([...selectedResourceKeys.value].filter((key) => availableKeys.has(key)))
+  if (next.size !== selectedResourceKeys.value.size) {
+    selectedResourceKeys.value = next
+  }
+})
+
+const selectedDownloadableResources = computed(() =>
+  downloadableResources.value.filter((resource) => selectedResourceKeys.value.has(resource.key)),
+)
+
+const allResourcesSelected = computed(() =>
+  Boolean(downloadableResources.value.length)
+  && downloadableResources.value.every((resource) => selectedResourceKeys.value.has(resource.key)),
+)
+
+const selectedResourceCount = computed(() => selectedDownloadableResources.value.length)
+
+const sectionDownloadableResources = (section: MoodleSection) =>
+  downloadableResources.value.filter((resource) => resource.sectionId === section.id)
+
+const isResourceSelected = (key: string) => selectedResourceKeys.value.has(key)
+
+const setResourceKeysSelected = (keys: string[], selected: boolean) => {
+  const next = new Set(selectedResourceKeys.value)
+  for (const key of keys) {
+    if (selected) next.add(key)
+    else next.delete(key)
+  }
+  selectedResourceKeys.value = next
+}
+
+const toggleResourceSelection = (key: string, selected: boolean) => {
+  setResourceKeysSelected([key], selected)
+}
+
+const toggleAllResources = (selected: boolean) => {
+  setResourceKeysSelected(downloadableResources.value.map((resource) => resource.key), selected)
+}
+
+const toggleSectionResources = (section: MoodleSection, selected: boolean) => {
+  setResourceKeysSelected(sectionDownloadableResources(section).map((resource) => resource.key), selected)
+}
+
+const isSectionAllSelected = (section: MoodleSection) => {
+  const resources = sectionDownloadableResources(section)
+  return Boolean(resources.length) && resources.every((resource) => selectedResourceKeys.value.has(resource.key))
+}
+
+const isSectionPartiallySelected = (section: MoodleSection) => {
+  const resources = sectionDownloadableResources(section)
+  const selectedCount = resources.filter((resource) => selectedResourceKeys.value.has(resource.key)).length
+  return selectedCount > 0 && selectedCount < resources.length
+}
+
+const downloadResources = async (resources: DownloadableResource[]) => {
+  if (!resources.length || downloadingResources.value) return
+  try {
+    const result = await window.electronAPI.dialogOpenDirectory({
+      title: 'Choose courseware download folder',
+    })
+    if (result.canceled || !result.filePaths.length) return
+    downloadingResources.value = true
+    const summary = await window.electronAPI.downloadCourseResources({
+      targetDirectory: result.filePaths[0],
+      courseCode: props.course.courseCode,
+      courseName: props.course.courseName,
+      resources,
+    })
+    if (summary.failed) {
+      ElMessage.warning({
+        message: `Downloaded ${summary.succeeded}/${summary.total} files. ${summary.failed} failed.`,
+        customClass: 'campus-toast',
+        showClose: true,
+      })
+      return
+    }
+    ElMessage.success({
+      message: `Downloaded ${summary.succeeded} files to ${summary.courseDir}`,
+      customClass: 'campus-toast',
+      showClose: true,
+    })
+  } catch (error) {
+    ElMessage.error({
+      message: error instanceof Error ? error.message : 'Failed to download course resources',
+      customClass: 'campus-toast',
+      showClose: true,
+    })
+  } finally {
+    downloadingResources.value = false
+  }
+}
+
+const downloadAllResources = () => {
+  downloadResources(downloadableResources.value)
+}
+
+const downloadSelectedResources = () => {
+  downloadResources(selectedDownloadableResources.value)
+}
+
+const downloadSectionResources = (section: MoodleSection) => {
+  downloadResources(sectionDownloadableResources(section))
+}
 </script>
 
 <template>
@@ -136,7 +283,7 @@ const visibleSections = computed(() =>
     <div class="cd-topbar">
       <button class="cd-back-btn" @click="emit('back')">
         <el-icon><Back /></el-icon>
-        Back to Dashboard
+        Back
       </button>
       <span class="cd-breadcrumb">
         Home
@@ -175,6 +322,32 @@ const visibleSections = computed(() =>
               </span>
             </span>
           </div>
+        </div>
+        <div class="cd-download-controls">
+          <el-checkbox
+            :model-value="allResourcesSelected"
+            :indeterminate="selectedResourceCount > 0 && !allResourcesSelected"
+            :disabled="!downloadableResources.length || downloadingResources"
+            @change="(checked: string | number | boolean) => toggleAllResources(Boolean(checked))"
+          >
+            All
+          </el-checkbox>
+          <button
+            class="cd-download-all-btn"
+            :disabled="!selectedResourceCount || downloadingResources"
+            @click="downloadSelectedResources"
+          >
+            <el-icon><Download /></el-icon>
+            {{ downloadingResources ? 'Downloading...' : `Selected (${selectedResourceCount})` }}
+          </button>
+          <button
+            class="cd-download-all-btn"
+            :disabled="!downloadableResources.length || downloadingResources"
+            @click="downloadAllResources"
+          >
+            <el-icon><Download /></el-icon>
+            {{ downloadingResources ? 'Downloading...' : `All (${downloadableResources.length})` }}
+          </button>
         </div>
       </div>
 
@@ -226,10 +399,28 @@ const visibleSections = computed(() =>
             <span class="cd-section-title">{{ section.name || '未命名章节' }}</span>
             <span class="cd-section-count">{{ section.moduleCount }} 项</span>
           </div>
-          <el-icon class="cd-section-toggle">
-            <ArrowUp v-if="!isSectionCollapsed(section.id)" />
-            <ArrowDown v-else />
-          </el-icon>
+          <div class="cd-section-actions" @click.stop>
+            <el-checkbox
+              :model-value="isSectionAllSelected(section)"
+              :indeterminate="isSectionPartiallySelected(section)"
+              :disabled="!sectionDownloadableResources(section).length || downloadingResources"
+              @change="(checked: string | number | boolean) => toggleSectionResources(section, Boolean(checked))"
+            >
+              Select
+            </el-checkbox>
+            <button
+              class="cd-section-download-btn"
+              :disabled="!sectionDownloadableResources(section).length || downloadingResources"
+              @click="downloadSectionResources(section)"
+            >
+              <el-icon><Download /></el-icon>
+              {{ sectionDownloadableResources(section).length }}
+            </button>
+            <el-icon class="cd-section-toggle" @click="toggleSection(section.id)">
+              <ArrowUp v-if="!isSectionCollapsed(section.id)" />
+              <ArrowDown v-else />
+            </el-icon>
+          </div>
         </div>
 
         <!-- Cards grid -->
@@ -243,6 +434,12 @@ const visibleSections = computed(() =>
                 :key="`${mod.id}-${res.fileurl}`"
                 class="cd-file-card"
               >
+                <el-checkbox
+                  class="cd-resource-checkbox"
+                  :model-value="isResourceSelected(makeResourceKey(section, mod, res))"
+                  :disabled="downloadingResources"
+                  @change="(checked: string | number | boolean) => toggleResourceSelection(makeResourceKey(section, mod, res), Boolean(checked))"
+                />
                 <div
                   class="cd-file-ext-badge"
                   :style="{ background: getExtColor(getFileExt(res.filename)) }"
@@ -464,6 +661,45 @@ const visibleSections = computed(() =>
   min-width: 0;
 }
 
+.cd-download-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.cd-download-all-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 154px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1.5px solid var(--accent-b);
+  border-radius: 8px;
+  background: var(--cd-action-p-bg);
+  color: var(--accent-b);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.cd-download-all-btn:hover {
+  background: var(--accent-b);
+  color: #fff;
+}
+
+.cd-download-all-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 .cd-course-title {
   margin: 0 0 6px;
   font-size: 20px;
@@ -594,6 +830,43 @@ const visibleSections = computed(() =>
   font-size: 14px;
 }
 
+.cd-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.cd-section-download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 56px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--accent-b);
+  border-radius: 7px;
+  background: var(--cd-action-p-bg);
+  color: var(--accent-b);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.cd-section-download-btn:hover {
+  background: var(--accent-b);
+  color: #fff;
+}
+
+.cd-section-download-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ── Exam table ──────────────────────────────────────────────── */
 .cd-exam-table-wrap {
   padding: 0 16px 16px;
@@ -668,6 +941,11 @@ const visibleSections = computed(() =>
   padding: 14px;
   transition: border-color 0.15s, box-shadow 0.15s;
   position: relative;
+}
+
+.cd-resource-checkbox {
+  flex-shrink: 0;
+  margin-top: 9px;
 }
 
 .cd-file-card:hover {

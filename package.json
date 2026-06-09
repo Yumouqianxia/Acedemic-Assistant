@@ -1,7 +1,7 @@
 {
   "name": "acedemic-assistant",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,12 +25,14 @@
     "electron-updater": "^6.8.3",
     "element-plus": "^2.13.5",
     "file-uri-to-path": "^1.0.0",
+    "markdown-it": "^14.2.0",
     "vue": "^3.4.21",
     "vue-router": "^5.0.4"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^5.0.4",
     "electron": "^30.0.1",
     "electron-builder": "^24.13.3",

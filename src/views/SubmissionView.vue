@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ArrowRight, Back, Delete, Document, Download, Refresh, Upload } from '@element-plus/icons-vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSubmission } from '../composables/useSubmission'
 import { useTimeline } from '../composables/useTimeline'
 import { formatBytes } from '../composables/useUtils'
@@ -25,6 +26,7 @@ const {
   submissionStatusLabel,
   totalSelectedSize,
   handleSelectFiles,
+  handleAddLocalFiles,
   handleRemoveFile,
   handleSubmit,
 } = useSubmission()
@@ -86,6 +88,48 @@ const openAttachment = async (file: { filename: string; fileurl: string; mimetyp
     window.open(file.fileurl, '_blank')
   }
 }
+
+const dragActive = ref(false)
+
+const extractFilePaths = (files: FileList | null | undefined): string[] => {
+  if (!files?.length) return []
+  return Array.from(files)
+    .map((file) => ((file as File & { path?: string }).path || '').trim())
+    .filter((path): path is string => Boolean(path))
+}
+
+const onDropzoneDragOver = (event: DragEvent) => {
+  event.preventDefault()
+  dragActive.value = true
+}
+
+const onDropzoneDragLeave = (event: DragEvent) => {
+  event.preventDefault()
+  dragActive.value = false
+}
+
+const onDropzoneDrop = (event: DragEvent) => {
+  event.preventDefault()
+  dragActive.value = false
+  const paths = extractFilePaths(event.dataTransfer?.files)
+  if (!paths.length) return
+  handleAddLocalFiles(paths)
+}
+
+const onWindowPaste = (event: ClipboardEvent) => {
+  const paths = extractFilePaths(event.clipboardData?.files)
+  if (!paths.length) return
+  event.preventDefault()
+  handleAddLocalFiles(paths)
+}
+
+onMounted(() => {
+  window.addEventListener('paste', onWindowPaste)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('paste', onWindowPaste)
+})
 
 const formatGradedAt = (timestamp: number | null) => {
   if (!timestamp) return '评分时间未知'
@@ -185,10 +229,20 @@ const backButtonText = computed(() => (props.backTarget === 'course' ? 'Back to 
           Currently Submitted Files
         </div>
         <div class="sub-file-list">
-          <div v-for="file in submissionStatus.submittedFiles" :key="file.fileurl" class="sub-submitted-file">
-            <el-icon class="sub-file-icon"><Document /></el-icon>
-            <span class="sub-file-name">{{ file.filename }}</span>
-            <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+          <div
+            v-for="file in submissionStatus.submittedFiles"
+            :key="file.fileurl"
+            class="sub-attachment-file"
+            @click="openAttachment(file)"
+          >
+            <div class="sub-att-ext" :style="{ background: getAttExtColor(file.filename) }">
+              {{ getAttExt(file.filename) }}
+            </div>
+            <div class="sub-att-info">
+              <span class="sub-file-name">{{ file.filename }}</span>
+              <span class="sub-file-size">{{ formatBytes(file.filesize) }}</span>
+            </div>
+            <el-icon class="sub-att-action"><Download /></el-icon>
           </div>
         </div>
       </div>
@@ -241,9 +295,16 @@ const backButtonText = computed(() => (props.backTarget === 'course' ? 'Back to 
           Upload New Submission
         </div>
 
-        <div class="sub-dropzone" @click="handleSelectFiles">
+        <div
+          class="sub-dropzone"
+          :class="{ 'is-drag-active': dragActive }"
+          @click="handleSelectFiles"
+          @dragover="onDropzoneDragOver"
+          @dragleave="onDropzoneDragLeave"
+          @drop="onDropzoneDrop"
+        >
           <el-icon class="sub-drop-icon"><Upload /></el-icon>
-          <div class="sub-drop-text">Click to select files</div>
+          <div class="sub-drop-text">Click, drag, or paste files</div>
           <div class="sub-drop-hint">
             Max {{ submissionAssignment.maxFileSubmissions }} file{{ submissionAssignment.maxFileSubmissions !== 1 ? 's' : '' }}
             · {{ submissionAssignment.allowedFileTypes || 'All file types' }}
@@ -597,6 +658,11 @@ const backButtonText = computed(() => (props.backTarget === 'course' ? 'Back to 
 }
 
 .sub-dropzone:hover {
+  border-color: var(--accent-b);
+  background: var(--tl-hover-bg);
+}
+
+.sub-dropzone.is-drag-active {
   border-color: var(--accent-b);
   background: var(--tl-hover-bg);
 }

@@ -220,6 +220,12 @@ interface Window {
         url: string
         visible: boolean
         uservisible: boolean
+        assignmentFiles?: Array<{
+          filename: string
+          filesize: number
+          fileurl: string
+          mimetype: string
+        }>
         resources: Array<{
           type: string
           filename: string

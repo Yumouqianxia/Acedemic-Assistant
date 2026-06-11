@@ -454,6 +454,29 @@ export class MoodleService {
     if (!Number.isFinite(courseId)) throw new Error('无效课程 ID')
     const session = this.ensureSession(payload?.username)
     const sections = await this.callMoodleWs<MoodleSection[]>('core_course_get_contents', session.token, { courseid: courseId })
+    const assignmentFilesByCmid = new Map<number, AssignmentDetail['introAttachments']>()
+    try {
+      const assignmentsData = await this.callMoodleWs<MoodleAssignmentsResponse>(
+        'mod_assign_get_assignments',
+        session.token,
+        { 'courseids[0]': courseId },
+      )
+      for (const assign of (assignmentsData.courses ?? []).flatMap((course) => course.assignments ?? [])) {
+        assignmentFilesByCmid.set(
+          assign.cmid,
+          (assign.introattachments ?? [])
+            .filter((file) => Boolean(file.fileurl))
+            .map((file) => ({
+              filename: file.filename,
+              filesize: file.filesize,
+              fileurl: this.withToken(file.fileurl, session.token),
+              mimetype: file.mimetype,
+            })),
+        )
+      }
+    } catch (error) {
+      console.warn('[moodle] assignment files unavailable for course contents', error)
+    }
 
     return sections.map((section) => ({
       id: section.id,
@@ -466,6 +489,9 @@ export class MoodleService {
         url: module.url ?? '',
         visible: module.visible,
         uservisible: module.uservisible,
+        assignmentFiles: module.modname === 'assign'
+          ? (assignmentFilesByCmid.get(module.id) ?? [])
+          : [],
         resources: (module.contents ?? [])
           .filter((item) => item.type === 'file' || item.type === 'url')
           .map((item) => ({

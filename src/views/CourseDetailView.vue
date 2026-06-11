@@ -51,6 +51,12 @@ type MoodleSection = {
     name: string
     modname: string
     url: string
+    assignmentFiles?: Array<{
+      filename: string
+      filesize: number
+      fileurl: string
+      mimetype: string
+    }>
     resources: Array<{
       filename: string
       filesize: number
@@ -152,8 +158,8 @@ const makeResourceKey = (
 
 const downloadableResources = computed(() =>
   props.sections.flatMap((section) =>
-    section.modules.flatMap((mod) =>
-      mod.resources.map((resource) => ({
+    section.modules.flatMap((mod) => [
+      ...mod.resources.map((resource) => ({
         key: makeResourceKey(section, mod, resource),
         sectionId: section.id,
         sectionName: section.name || 'Uncategorized',
@@ -162,7 +168,16 @@ const downloadableResources = computed(() =>
         filename: resource.filename || mod.name,
         fileurl: resource.fileurl,
       })),
-    ),
+      ...(mod.assignmentFiles ?? []).map((file) => ({
+        key: `${section.id}:${mod.id}:assignment:${file.fileurl || file.filename}`,
+        sectionId: section.id,
+        sectionName: section.name || 'Uncategorized',
+        moduleId: mod.id,
+        moduleName: mod.name || file.filename,
+        filename: file.filename || mod.name,
+        fileurl: file.fileurl,
+      })),
+    ]),
   ),
 )
 

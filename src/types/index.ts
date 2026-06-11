@@ -44,6 +44,12 @@ export type MoodleSection = {
     name: string
     modname: string
     url: string
+    assignmentFiles?: Array<{
+      filename: string
+      filesize: number
+      fileurl: string
+      mimetype: string
+    }>
     resources: Array<{
       filename: string
       filesize: number

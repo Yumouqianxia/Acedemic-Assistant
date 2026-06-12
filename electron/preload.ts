@@ -182,6 +182,21 @@ const electronAPI = {
     ipcRenderer.on('main-process-message', listener)
     return () => ipcRenderer.off('main-process-message', listener)
   },
+  onUpdaterStatus(callback: (payload: {
+    status: 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
+    version?: string
+    percent?: number
+    message: string
+  }) => void) {
+    const listener = (_event: Electron.IpcRendererEvent, payload: {
+      status: 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
+      version?: string
+      percent?: number
+      message: string
+    }) => callback(payload)
+    ipcRenderer.on('updater:status', listener)
+    return () => ipcRenderer.off('updater:status', listener)
+  },
   moodleLogin(payload: { username: string; password: string; rememberPassword?: boolean }) {
     return ipcRenderer.invoke('moodle:login', payload) as Promise<MoodleUser>
   },

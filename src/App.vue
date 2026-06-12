@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { TimelineEvent, UnifiedCourse } from './types'
 import { useAuth } from './composables/useAuth'
@@ -73,6 +73,7 @@ const language = ref<'zh-CN' | 'en-US'>('zh-CN')
 const autoSyncIntervalHours = ref<0 | 6 | 24>(24)
 const downloadDirectory = ref('')
 const appVersion = ref('')
+let removeUpdaterStatusListener: (() => void) | null = null
 
 // ── Cross-cutting orchestration ───────────────────────────────────────────────
 
@@ -349,6 +350,19 @@ const handleBackFromSubmission = () => {
 }
 
 onMounted(async () => {
+  removeUpdaterStatusListener = window.electronAPI.onUpdaterStatus((payload) => {
+    if (payload.status === 'downloading') {
+      notifySuccess(payload.message, '更新下载中')
+      return
+    }
+    if (payload.status === 'downloaded' || payload.status === 'installing') {
+      notifySuccess(payload.message, '准备安装更新')
+      return
+    }
+    if (payload.status === 'error') {
+      notifyError(payload.message, '更新失败')
+    }
+  })
   try {
     const platform = await window.electronAPI.appPlatform()
     isMac.value = platform === 'darwin'
@@ -387,6 +401,11 @@ onMounted(async () => {
   } else if (autoSsoLogin.value && !loggingIn.value) {
     void handleSsoLogin()
   }
+})
+
+onBeforeUnmount(() => {
+  removeUpdaterStatusListener?.()
+  removeUpdaterStatusListener = null
 })
 </script>
 

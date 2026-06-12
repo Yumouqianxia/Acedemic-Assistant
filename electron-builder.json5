@@ -16,6 +16,7 @@
   ],
   "files": [
     "package.json",
+    "build/icons/**/*",
     "dist/**/*",
     "dist-electron/**",
     "node_modules/**/*",

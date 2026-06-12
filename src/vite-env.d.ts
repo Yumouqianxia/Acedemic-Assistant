@@ -184,6 +184,12 @@ interface Window {
     notebookOpenCourse: (payload: { course: { courseKey: string; courseCode: string; courseName: string } }) => Promise<boolean>
     notebookOpenCourseFolder: (payload: { course: { courseKey: string; courseCode: string; courseName: string } }) => Promise<boolean>
     onMainMessage: (callback: (message: string) => void) => () => void
+    onUpdaterStatus: (callback: (payload: {
+      status: 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
+      version?: string
+      percent?: number
+      message: string
+    }) => void) => () => void
     moodleLogin: (payload: { username: string; password: string; rememberPassword?: boolean }) => Promise<{
       username: string
       fullName: string

@@ -26,6 +26,7 @@ let autoSyncTimer: NodeJS.Timeout | null = null
 let autoSyncRunning = false
 let updatePromptVisible = false
 let updateDownloadStarted = false
+let updateLastProgressPercent = 0
 const downloadedFileCache = new Map<string, string>()
 const inFlightDownloadTasks = new Map<string, Promise<{ filePath: string }>>()
 
@@ -52,6 +53,13 @@ type CourseDownloadResource = {
   fileurl: string
 }
 
+type UpdaterStatusPayload = {
+  status: 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
+  version?: string
+  percent?: number
+  message: string
+}
+
 const DEFAULT_PREFERENCES: AppPreferences = {
   language: 'zh-CN',
   themeMode: 'system',
@@ -65,6 +73,16 @@ const elapsed = (start: number) => `${Date.now() - start}ms`
 const syncTag = () => `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
 const FILE_NAME_SAFE_RE = /[<>:"/\\|?*\u0000-\u001F]/g
 const FORCE_DOWNLOAD_RE = /[?&]forcedownload=1(?:&|$)/i
+
+function getAppIconPath() {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APP_ROOT, 'build', 'icons', 'icon.ico')
+  }
+  if (process.platform === 'linux') {
+    return path.join(process.env.APP_ROOT, 'build', 'icons', '512x512.png')
+  }
+  return path.join(process.env.VITE_PUBLIC, 'electron-vite.svg')
+}
 
 function sanitizeFilename(name: string) {
   return name.replace(FILE_NAME_SAFE_RE, '_').trim() || `download-${Date.now()}`
@@ -323,7 +341,7 @@ function createWindow() {
     minHeight: 600,
     frame: !isMac ? false : true,
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       webviewTag: true,
@@ -339,6 +357,16 @@ function createWindow() {
   } else {
     win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
+}
+
+function sendUpdaterStatus(payload: UpdaterStatusPayload) {
+  win?.webContents.send('updater:status', payload)
+}
+
+function resetUpdateProgressUi() {
+  win?.setProgressBar(-1)
+  if (win) win.setTitle('GTIIT Campus Dashboard - Installing update')
+  updateLastProgressPercent = 0
 }
 
 function registerIpcHandlers() {
@@ -753,26 +781,38 @@ function registerIpcHandlers() {
   handle('window:is-maximized', () => win?.isMaximized() ?? false)
 }
 
-function setupAutoUpdater() {
+
+function setupAutoUpdaterV2() {
   if (VITE_DEV_SERVER_URL) return
 
   autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoInstallOnAppQuit = false
 
   autoUpdater.on('checking-for-update', () => {
     console.log('[updater] checking for updates')
+    sendUpdaterStatus({
+      status: 'checking',
+      message: 'Checking for updates...',
+    })
   })
+
   autoUpdater.on('update-available', async (info) => {
     console.log(`[updater] update available: ${info.version}`)
     if (updatePromptVisible || updateDownloadStarted) return
     updatePromptVisible = true
+    sendUpdaterStatus({
+      status: 'available',
+      version: info.version,
+      message: `New version v${info.version} is available.`,
+    })
+
     try {
       const messageBoxOptions: Electron.MessageBoxOptions = {
         type: 'info',
-        title: '发现新版本',
-        message: `发现新版本 v${info.version}，是否立即更新？`,
-        detail: '点击“立即更新”后将开始后台下载，下载完成后将在退出应用时自动安装。',
-        buttons: ['稍后', '立即更新'],
+        title: 'Update available',
+        message: `New version v${info.version} is available. Update now?`,
+        detail: 'Click Update Now to download in the background. When the download finishes, the app will quit, install the update, and restart automatically.',
+        buttons: ['Later', 'Update Now'],
         cancelId: 0,
         defaultId: 1,
         noLink: true,
@@ -780,10 +820,25 @@ function setupAutoUpdater() {
       const result = win
         ? await dialog.showMessageBox(win, messageBoxOptions)
         : await dialog.showMessageBox(messageBoxOptions)
+
       if (result.response === 1) {
         updateDownloadStarted = true
+        updateLastProgressPercent = 0
+        win?.setProgressBar(0)
+        sendUpdaterStatus({
+          status: 'downloading',
+          version: info.version,
+          percent: 0,
+          message: `Downloading v${info.version} in the background. The app will restart automatically after the download completes.`,
+        })
         void autoUpdater.downloadUpdate().catch((error) => {
           updateDownloadStarted = false
+          resetUpdateProgressUi()
+          sendUpdaterStatus({
+            status: 'error',
+            version: info.version,
+            message: error instanceof Error ? error.message : String(error),
+          })
           console.error('[updater] download failed:', error)
         })
       } else {
@@ -795,17 +850,61 @@ function setupAutoUpdater() {
       updatePromptVisible = false
     }
   })
+
   autoUpdater.on('update-not-available', (info) => {
     console.log(`[updater] no updates. current target: ${info.version}`)
+    sendUpdaterStatus({
+      status: 'not-available',
+      version: info.version,
+      message: 'You are already on the latest version.',
+    })
   })
+
   autoUpdater.on('download-progress', (progress) => {
     const percent = progress.percent.toFixed(1)
     console.log(`[updater] download ${percent}% (${Math.round(progress.bytesPerSecond / 1024)} KB/s)`)
+    const progressValue = Math.max(0, Math.min(1, progress.percent / 100))
+    win?.setProgressBar(progressValue)
+    if (win) win.setTitle(`GTIIT Campus Dashboard - Downloading update ${percent}%`)
+    const wholePercent = Math.floor(progress.percent)
+    if (wholePercent >= updateLastProgressPercent + 10 || wholePercent >= 100) {
+      updateLastProgressPercent = wholePercent
+      sendUpdaterStatus({
+        status: 'downloading',
+        percent: progress.percent,
+        message: `Downloading update ${percent}%`,
+      })
+    }
   })
+
   autoUpdater.on('update-downloaded', (info) => {
-    console.log(`[updater] update downloaded: ${info.version}, will install on quit`)
+    console.log(`[updater] update downloaded: ${info.version}, installing now`)
+    win?.setProgressBar(1)
+    if (win) win.setTitle('GTIIT Campus Dashboard - Installing update')
+    sendUpdaterStatus({
+      status: 'downloaded',
+      version: info.version,
+      percent: 100,
+      message: `v${info.version} has downloaded. Restarting to install now.`,
+    })
+    sendUpdaterStatus({
+      status: 'installing',
+      version: info.version,
+      percent: 100,
+      message: 'The app will quit and install the update now.',
+    })
+    setTimeout(() => {
+      autoUpdater.quitAndInstall(false, true)
+    }, 1200)
   })
+
   autoUpdater.on('error', (error) => {
+    updateDownloadStarted = false
+    resetUpdateProgressUi()
+    sendUpdaterStatus({
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    })
     console.error('[updater] failed:', error)
   })
 
@@ -888,7 +987,7 @@ app.whenReady().then(() => {
     void runAutoSyncIfDue()
   }, AUTO_SYNC_CHECK_MS)
   createWindow()
-  setupAutoUpdater()
+  setupAutoUpdaterV2()
 }).catch((error) => {
   console.error('[main] app init failed:', error)
 })

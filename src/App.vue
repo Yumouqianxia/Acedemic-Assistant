@@ -79,26 +79,15 @@ let removeUpdaterStatusListener: (() => void) | null = null
 
 const syncAfterLogin = async (username: string) => {
   moodleSyncing.value = true
-  studentsSyncing.value = true
   try {
     const syncResult = await window.electronAPI.dashboardSyncAll({ username, trigger: 'login' })
     await loadProfiles()
     await loadDashboard()
     const moodleText = `Moodle(${formatCourseDelta(syncResult.moodle.delta)})`
-    const studentsTimeout = Boolean(syncResult.studentsError && /ERR_TIMED_OUT/i.test(syncResult.studentsError))
-    const studentsText = syncResult.students
-      ? `Students(课程${formatCourseDelta(syncResult.students.delta.courses)}；考试 新增 ${syncResult.students.delta.exams.inserted}，更新 ${syncResult.students.delta.exams.updated}，删除 ${syncResult.students.delta.exams.deleted})`
-      : studentsTimeout
-        ? 'Students(网络超时，已跳过本次登录同步)'
-        : `Students(跳过：${syncResult.studentsError || '未认证'})`
-    if (syncResult.students || !syncResult.studentsError) {
-      notifySuccess(`登录后同步完成：${moodleText}，${studentsText}`, '同步完成')
-    } else {
-      notifyWarning(`登录后仅完成 Moodle 同步：${moodleText}，${studentsText}`, '同步部分完成')
-    }
+    notifySuccess(`Login sync complete: ${moodleText}. Students sync is disabled for account safety.`, 'Sync complete')
     void loadTimeline()
   } catch (error) {
-    notifyWarning(error instanceof Error ? `登录后自动同步失败：${error.message}` : '登录后自动同步失败', '同步失败')
+    notifyWarning(error instanceof Error ? `Login sync failed: ${error.message}` : 'Login sync failed', 'Sync failed')
   } finally {
     moodleSyncing.value = false
     studentsSyncing.value = false
@@ -118,12 +107,12 @@ const handleLogin = async () => {
     saveLastLoginUsername(result.username)
     loginForm.password = ''
     appStage.value = 'dashboard'
-    notifySuccess('登录成功，正在后台同步 Moodle / Students 数据', '登录成功')
+    notifySuccess('Login successful. Syncing Moodle in the background.', 'Login successful')
     await loadProfiles()
     await loadDashboard()
     void syncAfterLogin(result.username)
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : '登录失败', '登录失败')
+    notifyError(error instanceof Error ? error.message : 'Login failed', 'Login failed')
   } finally {
     loggingIn.value = false
   }
@@ -137,12 +126,12 @@ const handleSsoLogin = async () => {
     saveSession(result)
     saveLastLoginUsername(result.username)
     appStage.value = 'dashboard'
-    notifySuccess('SSO 登录成功，正在后台同步数据', '登录成功')
+    notifySuccess('SSO login successful. Syncing Moodle in the background.', 'Login successful')
     await loadProfiles()
     await loadDashboard()
     void syncAfterLogin(result.username)
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : 'SSO 登录失败', 'SSO 登录失败')
+    notifyError(error instanceof Error ? error.message : 'SSO login failed', 'SSO login failed')
   } finally {
     loggingIn.value = false
   }
@@ -163,7 +152,6 @@ const handleLogout = async () => {
 const handleSyncAll = async () => {
   if (!user.value) return
   moodleSyncing.value = true
-  studentsSyncing.value = true
   try {
     const result = await window.electronAPI.dashboardSyncAll({
       username: user.value.username,
@@ -171,13 +159,10 @@ const handleSyncAll = async () => {
     })
     await loadDashboard()
     const moodleText = `Moodle(${formatCourseDelta(result.moodle.delta)})`
-    const studentsText = result.students
-      ? `Students(课程${formatCourseDelta(result.students.delta.courses)}；考试 新增 ${result.students.delta.exams.inserted}，更新 ${result.students.delta.exams.updated}，删除 ${result.students.delta.exams.deleted})`
-      : `Students(跳过：${result.studentsError || '未认证'})`
-    notifySuccess(`同步完成：${moodleText}，${studentsText}`, '同步完成')
+    notifySuccess(`Sync complete: ${moodleText}. Students sync is disabled for account safety.`, 'Sync complete')
     void loadTimeline()
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : '同步全部失败', '同步失败')
+    notifyError(error instanceof Error ? error.message : 'Sync failed', 'Sync failed')
   } finally {
     moodleSyncing.value = false
     studentsSyncing.value = false
@@ -185,17 +170,22 @@ const handleSyncAll = async () => {
 }
 
 const handleRefreshGrades = async () => {
-  if (!user.value) {
-    notifyWarning('请先登录后再刷新成绩', '未登录')
-    return
-  }
+  const picked = await window.electronAPI.dialogOpenFile({
+    title: 'Select official transcript PDF',
+    filters: [{ name: 'PDF Transcript', extensions: ['pdf'] }],
+  })
+  if (picked.canceled || !picked.filePaths.length) return
+
   studentsSyncing.value = true
   try {
-    await window.electronAPI.studentsSync()
+    const result = await window.electronAPI.studentsImportTranscriptPdf({ filePath: picked.filePaths[0] })
     await loadDashboard()
-    notifySuccess('成绩刷新完成', '刷新成功')
+    notifySuccess(
+      `Imported ${result.courses.length} transcript courses. GPA ${result.gpa || 'N/A'}.`,
+      'Transcript imported',
+    )
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : '刷新成绩失败', '刷新失败')
+    notifyError(error instanceof Error ? error.message : 'Failed to import transcript', 'Transcript import failed')
   } finally {
     studentsSyncing.value = false
   }

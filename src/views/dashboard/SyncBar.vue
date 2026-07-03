@@ -20,7 +20,7 @@ defineEmits<{
       <span class="sync-sep">|</span>
       <span class="sync-item">
         <el-icon class="sync-icon-students"><UserFilled /></el-icon>
-        <b>Students</b>&nbsp;Last Sync:&nbsp;{{ formatTime(dashboard.lastStudentsSyncAt?.at) }}
+        <b>Students</b>&nbsp;Cached:&nbsp;{{ formatTime(dashboard.lastStudentsSyncAt?.at) }} · sync disabled
       </span>
     </div>
     <div class="sync-actions">
@@ -30,7 +30,7 @@ defineEmits<{
         @click="$emit('sync-all')"
       >
         <el-icon><Refresh /></el-icon>
-        SYNC ALL
+        SYNC MOODLE
       </el-button>
     </div>
   </div>

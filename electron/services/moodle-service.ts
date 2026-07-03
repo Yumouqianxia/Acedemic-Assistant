@@ -576,6 +576,11 @@ export class MoodleService {
       const OFFICE365_RETRY_MAX = 25
       const SILENT_TIMEOUT_MS = 8000
 
+      const isNavigationAbortError = (error: unknown) => {
+        const msg = error instanceof Error ? error.message : String(error)
+        return msg.includes('ERR_ABORTED') || msg.includes('(-3)') || msg.includes('code: -3')
+      }
+
       const unregisterProtocol = () => {
         try { ses.protocol.unregisterProtocol('moodlemobile') } catch { /* already removed */ }
       }
@@ -688,8 +693,10 @@ export class MoodleService {
         clearOffice365Retry()
         console.info('[moodle:sso] switching to interactive mode:', reason)
         win.webContents.loadURL(MOODLE_LOGIN_URL).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err)
-          if (!msg.includes('ERR_ABORTED')) finish(new Error(msg))
+          if (!isNavigationAbortError(err)) {
+            const msg = err instanceof Error ? err.message : String(err)
+            finish(new Error(msg))
+          }
         })
       }
 
@@ -779,9 +786,10 @@ export class MoodleService {
       })
 
       // Backup A: did-fail-load fires after Electron rejects the unknown scheme
-      win.webContents.on('did-fail-load', (_evt, _code, _desc, validatedURL, isMainFrame) => {
+      win.webContents.on('did-fail-load', (_evt, code, _desc, validatedURL, isMainFrame) => {
         if (!isMainFrame) return
         if (validatedURL?.startsWith('moodlemobile://')) processTokenUrl(validatedURL)
+        if (code === -3) return
       })
 
       // Detect successful Moodle login by watching main-frame navigations
@@ -849,8 +857,10 @@ export class MoodleService {
         }
       }, SILENT_TIMEOUT_MS)
       win.loadURL(LAUNCH_URL).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (!msg.includes('ERR_ABORTED')) finish(new Error(msg))
+        if (!isNavigationAbortError(err)) {
+          const msg = err instanceof Error ? err.message : String(err)
+          finish(new Error(msg))
+        }
       })
     })
   }

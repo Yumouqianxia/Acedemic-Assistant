@@ -9,6 +9,7 @@ const OUT_DIR = process.env.ICON_OUT_DIR || 'build/icons'
 const ICONSET_DIR = path.join(OUT_DIR, 'icon.iconset')
 const SOURCE_1024 = path.join(OUT_DIR, 'icon-1024.png')
 const TARGET_ICNS = path.join(OUT_DIR, 'icon.icns')
+const MAC_ARTWORK_RATIO = Number.parseFloat(process.env.MAC_ICON_ARTWORK_RATIO || '0.82')
 
 const ICONSET_MAP = [
   ['icon_16x16.png', 16],
@@ -22,16 +23,6 @@ const ICONSET_MAP = [
   ['icon_512x512.png', 512],
   ['icon_512x512@2x.png', 1024],
 ]
-
-function makeRoundedMask(size, radiusRatio = 0.225) {
-  const radius = Math.round(size * radiusRatio)
-  const svg = `
-    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
-      <rect x="0" y="0" width="${size}" height="${size}" rx="${radius}" ry="${radius}" fill="white" />
-    </svg>
-  `
-  return Buffer.from(svg)
-}
 
 async function ensureFileExists(file) {
   try {
@@ -54,10 +45,27 @@ async function main() {
   await fs.mkdir(ICONSET_DIR, { recursive: true })
 
   for (const [fileName, size] of ICONSET_MAP) {
-    const roundedMask = makeRoundedMask(size)
-    await sharp(SOURCE_1024)
-      .resize(size, size, { fit: 'cover' })
-      .composite([{ input: roundedMask, blend: 'dest-in' }])
+    const artworkSize = Math.round(size * MAC_ARTWORK_RATIO)
+    const artwork = await sharp(SOURCE_1024)
+      .resize(artworkSize, artworkSize, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer()
+    await sharp({
+      create: {
+        width: size,
+        height: size,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([{
+        input: artwork,
+        left: Math.floor((size - artworkSize) / 2),
+        top: Math.floor((size - artworkSize) / 2),
+      }])
       .png()
       .toFile(path.join(ICONSET_DIR, fileName))
   }

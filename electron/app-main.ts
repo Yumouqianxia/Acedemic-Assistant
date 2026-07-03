@@ -6,6 +6,7 @@ import { autoUpdater } from 'electron-updater'
 import { DashboardDb } from './dashboard-db'
 import { MoodleService } from './services/moodle-service'
 import { StudentsService } from './services/students-service'
+import { TranscriptService } from './services/transcript-service'
 import { NotebookService, type NotebookCourse } from './notebook-service'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -21,6 +22,7 @@ let win: BrowserWindow | null = null
 let dashboardDb: DashboardDb | null = null
 let moodleService: MoodleService | null = null
 let studentsService: StudentsService | null = null
+let transcriptService: TranscriptService | null = null
 let notebookService: NotebookService | null = null
 let autoSyncTimer: NodeJS.Timeout | null = null
 let autoSyncRunning = false
@@ -31,10 +33,10 @@ const downloadedFileCache = new Map<string, string>()
 const inFlightDownloadTasks = new Map<string, Promise<{ filePath: string }>>()
 
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
-const STUDENTS_RETRY_SETTLE_MS = 600
 const CHECK_UPDATES_DELAY_MS = 15_000
 const DOWNLOAD_CACHE_SUBDIR = 'CampusDashboardCache'
 const PREF_KEY = 'app:preferences'
+const STUDENTS_SYNC_DISABLED_MESSAGE = 'Students sync is disabled for account safety. Import an official transcript instead.'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 type Language = 'zh-CN' | 'en-US'
@@ -67,7 +69,6 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   downloadDirectory: null,
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const now = () => Date.now()
 const elapsed = (start: number) => `${Date.now() - start}ms`
 const syncTag = () => `sync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
@@ -241,27 +242,11 @@ async function downloadCourseResources(payload: {
   }
 }
 
-const isStudentsNotReadyError = (message: string) => {
-  const msg = message.toLowerCase()
-  return msg.includes('未捕获到 authorization')
-    || msg.includes('未检测到 sid')
-    || msg.includes('session')
-    || msg.includes('not ready')
-}
-
-const shouldRetryWithStudentsAuth = (message: string) => {
-  const msg = message.toLowerCase()
-  return msg.includes('当前未登录')
-    || msg.includes('未登录')
-    || msg.includes('未捕获到 authorization')
-    || msg.includes('未检测到 sid')
-}
-
 function ensureServices() {
-  if (!dashboardDb || !moodleService || !studentsService) {
+  if (!dashboardDb || !moodleService || !studentsService || !transcriptService) {
     throw new Error('服务尚未初始化')
   }
-  return { dashboardDb, moodleService, studentsService }
+  return { dashboardDb, moodleService, studentsService, transcriptService }
 }
 
 function ensureNotebookService() {
@@ -504,8 +489,15 @@ function registerIpcHandlers() {
     return ensureServices().moodleService.loginViaSso(() => win)
   })
 
-  handle('students:authenticate', () => ensureServices().studentsService.authenticate())
-  handle('students:sync', () => ensureServices().studentsService.sync())
+  handle('students:authenticate', () => {
+    throw new Error(STUDENTS_SYNC_DISABLED_MESSAGE)
+  })
+  handle('students:sync', () => {
+    throw new Error(STUDENTS_SYNC_DISABLED_MESSAGE)
+  })
+  handle('students:transcript:import-pdf', (_event, payload: { filePath: string }) => {
+    return ensureServices().transcriptService.importPdf(payload)
+  })
   handle('students:session:clear', () => ensureServices().studentsService.clearSession())
 
   handle('dashboard:get', () => ensureServices().dashboardDb.getDashboardSnapshot())
@@ -513,121 +505,26 @@ function registerIpcHandlers() {
     const trace = syncTag()
     const startedAt = now()
     const trigger = payload?.trigger ?? 'manual'
-    const { dashboardDb, moodleService, studentsService } = ensureServices()
-    console.log(`[dashboard:sync-all][${trace}] start trigger=${trigger} username=${payload?.username ?? 'unknown'}`)
+    const { dashboardDb, moodleService } = ensureServices()
+    console.log(`[dashboard:sync-all][${trace}] start trigger=${trigger} username=${payload?.username ?? 'unknown'} students=disabled`)
     const moodleStarted = now()
     const moodle = await moodleService.sync({ username: payload?.username })
     console.log(`[dashboard:sync-all][${trace}] moodle.sync done in ${elapsed(moodleStarted)}`)
-    let students:
-      | Awaited<ReturnType<StudentsService['sync']>>
-      | null = null
-    let studentsError: string | null = null
-
-    const tryStudentsSync = async (
-      label: string,
-      options?: { discardRuntimeHints?: boolean; forceReload?: boolean },
-    ) => {
-      const s = now()
-      console.log(`[dashboard:sync-all][${trace}] students.sync attempt=${label} begin`)
-      students = await studentsService.sync({
-        discardRuntimeHints: options?.discardRuntimeHints ?? false,
-        forceReload: options?.forceReload ?? false,
-      })
-      console.log(`[dashboard:sync-all][${trace}] students.sync attempt=${label} success in ${elapsed(s)}`)
-    }
-
-    try {
-      await tryStudentsSync('first')
-    } catch (firstError) {
-      const firstMsg = firstError instanceof Error ? firstError.message : String(firstError)
-      console.warn(`[dashboard:sync-all][${trace}] students first attempt failed: ${firstMsg}`)
-      const isNotReady = trigger === 'login' && isStudentsNotReadyError(firstMsg)
-
-      if (isNotReady) {
-        try {
-          console.log(`[dashboard:sync-all][${trace}] students not-ready detected, warmup session then retry`)
-          const warmup = await studentsService.warmupSession({
-            forceReload: true,
-            timeoutMs: 4500,
-          })
-          console.log(`[dashboard:sync-all][${trace}] warmup result ready=${warmup.ready} elapsed=${warmup.elapsedMs}ms`)
-          await sleep(STUDENTS_RETRY_SETTLE_MS)
-          await tryStudentsSync('after-warmup')
-        } catch (retryAfterSettleError) {
-          const retryMsg = retryAfterSettleError instanceof Error ? retryAfterSettleError.message : String(retryAfterSettleError)
-          console.warn(`[dashboard:sync-all][${trace}] students retry-after-settle failed: ${retryMsg}`)
-          if (trigger !== 'login' && shouldRetryWithStudentsAuth(retryMsg)) {
-            try {
-              const authStarted = now()
-              console.log(`[dashboard:sync-all][${trace}] opening students auth window due to: ${retryMsg}`)
-              const authResult = await studentsService.authenticate()
-              console.log(`[dashboard:sync-all][${trace}] students authenticate done in ${elapsed(authStarted)} result=${authResult.authenticated ? 'ok' : `fail:${authResult.reason ?? 'unknown'}`}`)
-              if (authResult.authenticated) {
-                try {
-                  await sleep(1000)
-                  await tryStudentsSync('after-auth')
-                } catch (retryError) {
-                  studentsError = retryError instanceof Error ? retryError.message : String(retryError)
-                }
-              } else {
-                studentsError = `Students 认证未完成（${authResult.reason ?? 'cancelled'}），数据未同步`
-              }
-            } catch (authError) {
-              studentsError = authError instanceof Error ? authError.message : String(authError)
-            }
-          } else {
-            studentsError = retryMsg
-          }
-        }
-        if (students || studentsError) {
-          return {
-            trigger,
-            at: new Date().toISOString(),
-            moodle,
-            students,
-            studentsError,
-          }
-        }
-      }
-
-      if (trigger !== 'login' && shouldRetryWithStudentsAuth(firstMsg)) {
-        // Auto-trigger the authentication window, then retry sync
-        try {
-          const authStarted = now()
-          console.log(`[dashboard:sync-all][${trace}] opening students auth window due to first error`)
-          const authResult = await studentsService.authenticate()
-          console.log(`[dashboard:sync-all][${trace}] students authenticate done in ${elapsed(authStarted)} result=${authResult.authenticated ? 'ok' : `fail:${authResult.reason ?? 'unknown'}`}`)
-          if (authResult.authenticated) {
-            try {
-              await sleep(1000)
-              await tryStudentsSync('after-auth')
-            } catch (retryError) {
-              studentsError = retryError instanceof Error ? retryError.message : String(retryError)
-            }
-          } else {
-            studentsError = `Students 认证未完成（${authResult.reason ?? 'cancelled'}），数据未同步`
-          }
-        } catch (authError) {
-          studentsError = authError instanceof Error ? authError.message : String(authError)
-        }
-      } else {
-        studentsError = firstMsg
-      }
-    }
 
     const result = {
       trigger,
       at: new Date().toISOString(),
       moodle,
-      students,
-      studentsError,
+      students: null,
+      studentsError: STUDENTS_SYNC_DISABLED_MESSAGE,
     }
     if (trigger === 'auto') {
       dashboardDb.setMeta('sync:auto:last', result)
     }
-    console.log(`[dashboard:sync-all][${trace}] finish in ${elapsed(startedAt)} students=${students ? 'ok' : 'none'} studentsError=${studentsError ?? 'none'}`)
+    console.log(`[dashboard:sync-all][${trace}] finish in ${elapsed(startedAt)} students=disabled`)
     return result
   })
+
 
   // ── Moodle Timeline & Submission ──────────────────────────────────────────
   handle('moodle:timeline', (_event, payload?: { username?: string; daysAhead?: number }) => {
@@ -919,7 +816,7 @@ async function runAutoSyncIfDue() {
   if (autoSyncRunning) return
   const intervalMs = getAutoSyncIntervalMs()
   if (!intervalMs) return
-  const { dashboardDb, moodleService, studentsService } = ensureServices()
+  const { dashboardDb, moodleService } = ensureServices()
   if (!moodleService.hasActiveSession()) return
   const lastAuto = dashboardDb.getMetaValue('sync:auto:last') as { at?: string } | null
   const lastMoodle = dashboardDb.getMetaValue('sync:moodle:last') as { at?: string } | null
@@ -931,19 +828,12 @@ async function runAutoSyncIfDue() {
   autoSyncRunning = true
   try {
     const moodle = await moodleService.sync()
-    let students: Awaited<ReturnType<StudentsService['sync']>> | null = null
-    let studentsError: string | null = null
-    try {
-      students = await studentsService.sync()
-    } catch (error) {
-      studentsError = error instanceof Error ? error.message : String(error)
-    }
     dashboardDb.setMeta('sync:auto:last', {
       trigger: 'auto',
       at: new Date().toISOString(),
       moodle,
-      students,
-      studentsError,
+      students: null,
+      studentsError: STUDENTS_SYNC_DISABLED_MESSAGE,
     })
   } catch (error) {
     dashboardDb.setMeta('sync:auto:last', {
@@ -978,9 +868,8 @@ app.whenReady().then(() => {
   dashboardDb = new DashboardDb(dbPath)
   moodleService = new MoodleService(dashboardDb)
   studentsService = new StudentsService(dashboardDb, () => win)
+  transcriptService = new TranscriptService(dashboardDb)
   notebookService = new NotebookService(path.join(app.getPath('userData'), 'course-notes'))
-  studentsService.installRequestSniffer()
-
   registerIpcHandlers()
   void runAutoSyncIfDue()
   autoSyncTimer = setInterval(() => {

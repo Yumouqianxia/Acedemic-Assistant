@@ -424,6 +424,29 @@ const electronAPI = {
       }
     }>
   },
+  studentsImportTranscriptPdf(payload: { filePath: string }) {
+    return ipcRenderer.invoke('students:transcript:import-pdf', payload) as Promise<{
+      filePath: string
+      studentName: string
+      studentId: string
+      programName: string
+      gpa: string
+      accumulatedCreditPoints: string
+      courses: Array<{
+        code: string
+        name: string
+        credits: number
+        grade: string
+        semesterLabel: string
+        semesterTechnion: string
+      }>
+      delta: {
+        inserted: number
+        updated: number
+      }
+      importedAt: string
+    }>
+  },
   studentsSessionClear() {
     return ipcRenderer.invoke('students:session:clear') as Promise<boolean>
   },

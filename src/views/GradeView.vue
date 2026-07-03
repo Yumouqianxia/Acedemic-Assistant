@@ -11,10 +11,20 @@ const { dashboard, gpaDisplay, completedCreditsNum, currentSemesterInfo, student
 const gradeCourses = computed(() => dashboard.value.courses.filter((course) => course.hasStudents))
 const gradeSearchKeyword = ref('')
 
-const semesterScore = (semesterTechnion: string) => {
-  const match = semesterTechnion.match(/(20\d{2})\D*(\d{2})$/)
-  if (!match) return -1
-  return Number.parseInt(match[1], 10) * 10 + Number.parseInt(match[2], 10)
+const semesterScore = (semesterTechnion: string, semesterLabel = '') => {
+  const source = `${semesterTechnion} ${semesterLabel}`.trim()
+  const technionMatch = source.match(/(20\d{2})\D*(?:20)?\d{2}\D*([1-4])\b/)
+  if (technionMatch) {
+    return Number.parseInt(technionMatch[1], 10) * 10 + Number.parseInt(technionMatch[2], 10)
+  }
+  const labelMatch = source.match(/(20\d{2})\s*[-/]\s*(?:20)?(\d{2})\s+(WINTER|SPRING|SUMMER|FALL|AUTUMN)/i)
+  if (labelMatch) {
+    const termScore: Record<string, number> = { FALL: 1, AUTUMN: 1, SPRING: 2, SUMMER: 3, WINTER: 4 }
+    return Number.parseInt(labelMatch[1], 10) * 10 + (termScore[labelMatch[3].toUpperCase()] ?? 0)
+  }
+  const legacyMatch = source.match(/(20\d{2})\D*(\d{2})$/)
+  if (!legacyMatch) return -1
+  return Number.parseInt(legacyMatch[1], 10) * 10 + Number.parseInt(legacyMatch[2], 10)
 }
 
 const toComparableName = (name: string) =>
@@ -76,7 +86,7 @@ const groupedGradeCourses = computed(() => {
   for (const course of filteredGradeCourses.value) {
     const key = course.semesterTechnion || course.semesterLabel || 'unknown'
     const label = course.semesterLabel || course.semesterTechnion || '未知学期'
-    const score = semesterScore(course.semesterTechnion)
+    const score = semesterScore(course.semesterTechnion, course.semesterLabel)
     const existing = groups.get(key)
     if (!existing) {
       groups.set(key, { label, score, courses: [course] })
@@ -107,7 +117,7 @@ const courseStatus = computed(() => {
   for (const course of normalizedGradeCourses.value) {
     const code = course.courseCode?.trim()
     if (!code) continue
-    const score = semesterScore(course.semesterTechnion)
+    const score = semesterScore(course.semesterTechnion, course.semesterLabel)
     const updatedAt = Date.parse(course.updatedAt || '')
     const existing = latestByCode.get(code)
     if (!existing) {
@@ -132,7 +142,7 @@ const courseStatus = computed(() => {
       continue
     }
     const latest = latestByCode.get(code)
-    const currentScore = semesterScore(course.semesterTechnion)
+    const currentScore = semesterScore(course.semesterTechnion, course.semesterLabel)
     const currentUpdatedAt = Date.parse(course.updatedAt || '')
     const hasLaterAttempt = Boolean(
       latest
@@ -192,7 +202,7 @@ const resolveStatus = (courseKey: string): CourseStatus => {
         @click="emit('refresh-grades')"
       >
         <el-icon v-if="!studentsSyncing"><RefreshRight /></el-icon>
-        刷新成绩
+        Import Transcript
       </el-button>
     </div>
 

@@ -418,6 +418,27 @@ interface Window {
         }
       }
     }>
+    studentsImportTranscriptPdf: (payload: { filePath: string }) => Promise<{
+      filePath: string
+      studentName: string
+      studentId: string
+      programName: string
+      gpa: string
+      accumulatedCreditPoints: string
+      courses: Array<{
+        code: string
+        name: string
+        credits: number
+        grade: string
+        semesterLabel: string
+        semesterTechnion: string
+      }>
+      delta: {
+        inserted: number
+        updated: number
+      }
+      importedAt: string
+    }>
     studentsSessionClear: () => Promise<boolean>
     dashboardGet: () => Promise<{
       courses: Array<{

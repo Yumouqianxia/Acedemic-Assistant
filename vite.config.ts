@@ -23,6 +23,13 @@ export default defineConfig({
       main: {
         // Shortcut of `build.lib.entry`.
         entry: 'electron/app-main.ts',
+        vite: {
+          build: {
+            rollupOptions: {
+              external: ['pdf-parse/lib/pdf-parse.js'],
+            },
+          },
+        },
       },
       preload: {
         // Shortcut of `build.rollupOptions.input`.

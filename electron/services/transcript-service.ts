@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import pdfParse from 'pdf-parse'
+import pdfParse from 'pdf-parse/lib/pdf-parse.js'
 import { DashboardDb } from '../dashboard-db'
 
 type TranscriptCourse = {

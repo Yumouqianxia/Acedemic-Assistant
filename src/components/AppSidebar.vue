@@ -21,6 +21,10 @@ const mainNavItems = [
     label: 'Notebook',
   },
   {
+    id: 'study',
+    label: 'Study Planner',
+  },
+  {
     id: 'grade',
     label: 'Grade',
   },
@@ -63,6 +67,12 @@ const mainNavItems = [
             <line x1="8.5" y1="6.5" x2="8.5" y2="17.5" />
             <line x1="11.5" y1="9" x2="17" y2="9" />
             <line x1="11.5" y1="13" x2="17" y2="13" />
+          </svg>
+          <!-- Grade icon -->
+          <svg v-else-if="item.id === 'study'" class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="8"/>
+            <path d="M12 8v4l3 2"/>
+            <path d="M7 3 4 6M17 3l3 3"/>
           </svg>
           <!-- Grade icon -->
           <svg v-else-if="item.id === 'grade'" class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

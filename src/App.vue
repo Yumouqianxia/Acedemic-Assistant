@@ -15,6 +15,7 @@ import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import CoursesView from './views/CoursesView.vue'
 import NotebookView from './views/NotebookView.vue'
+import StudyView from './views/StudyView.vue'
 import SubmissionView from './views/SubmissionView.vue'
 import CourseDetailView from './views/CourseDetailView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -22,7 +23,7 @@ import GradeView from './views/GradeView.vue'
 import ProfileView from './views/ProfileView.vue'
 
 const router = useRouter()
-const appStage = ref<'login' | 'dashboard' | 'course' | 'notebook' | 'grade' | 'profile' | 'submission' | 'courseDetail' | 'settings'>('login')
+const appStage = ref<'login' | 'dashboard' | 'course' | 'notebook' | 'study' | 'grade' | 'profile' | 'submission' | 'courseDetail' | 'settings'>('login')
 const submissionBackTarget = ref<'dashboard' | 'course'>('dashboard')
 const courseDetailBackTarget = ref<'dashboard' | 'course'>('dashboard')
 const isMac = ref(false)
@@ -42,6 +43,8 @@ const handleSidebarNavigate = (stage: string) => {
     void router.push({ name: 'home' })
   } else if (stage === 'notebook') {
     appStage.value = 'notebook'
+  } else if (stage === 'study') {
+    appStage.value = 'study'
   } else if (stage === 'grade') {
     appStage.value = 'grade'
   } else if (stage === 'profile') {
@@ -443,6 +446,8 @@ onBeforeUnmount(() => {
       />
 
       <NotebookView v-else-if="appStage === 'notebook'" />
+
+      <StudyView v-else-if="appStage === 'study'" />
 
       <GradeView
         v-else-if="appStage === 'grade'"

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, shell, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { access, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
@@ -8,6 +8,9 @@ import { MoodleService } from './services/moodle-service'
 import { StudentsService } from './services/students-service'
 import { TranscriptService } from './services/transcript-service'
 import { NotebookService, type NotebookCourse } from './notebook-service'
+import { StudyDb, type StudyTaskInput } from './study-db'
+import { csvTasksContent, csvTemplateContent, parseStudyTaskCsv, type CsvTaskRow } from './study-csv-service'
+import { buildStudyCalendarHtml } from './study-calendar-pdf'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -24,7 +27,11 @@ let moodleService: MoodleService | null = null
 let studentsService: StudentsService | null = null
 let transcriptService: TranscriptService | null = null
 let notebookService: NotebookService | null = null
+let studyDb: StudyDb | null = null
 let autoSyncTimer: NodeJS.Timeout | null = null
+let studyAlertTimer: NodeJS.Timeout | null = null
+let tray: Tray | null = null
+let isQuitting = false
 let autoSyncRunning = false
 let updatePromptVisible = false
 let updateDownloadStarted = false
@@ -34,6 +41,7 @@ const inFlightDownloadTasks = new Map<string, Promise<{ filePath: string }>>()
 
 const AUTO_SYNC_CHECK_MS = 15 * 60 * 1000
 const CHECK_UPDATES_DELAY_MS = 15_000
+const STUDY_ALERT_CHECK_MS = 15_000
 const DOWNLOAD_CACHE_SUBDIR = 'CampusDashboardCache'
 const PREF_KEY = 'app:preferences'
 const STUDENTS_SYNC_DISABLED_MESSAGE = 'Students sync is disabled for account safety. Import an official transcript instead.'
@@ -254,6 +262,60 @@ function ensureNotebookService() {
   return notebookService
 }
 
+function ensureStudyDb() {
+  if (!studyDb) throw new Error('Study planner is not ready')
+  return studyDb
+}
+
+function validateStudyTaskInput(input: StudyTaskInput) {
+  const title = input?.title?.trim()
+  const scheduledDate = input?.scheduledDate?.trim()
+  if (!title) throw new Error('Task title is required')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate)) throw new Error('A valid task date is required')
+  const estimatedMinutes = Math.min(720, Math.max(1, Math.round(Number(input.estimatedMinutes) || 50)))
+  const priority = input.priority === 1 || input.priority === 3 ? input.priority : 2
+  return {
+    ...input,
+    title,
+    scheduledDate,
+    courseKey: input.courseKey?.trim() ?? '',
+    courseName: input.courseName?.trim() ?? '',
+    description: input.description?.trim() ?? '',
+    startTime: /^\d{2}:\d{2}$/.test(input.startTime ?? '') ? input.startTime : '',
+    estimatedMinutes,
+    priority,
+    noteId: input.noteId?.trim() || null,
+    reminderAt: input.reminderAt || null,
+  } satisfies StudyTaskInput
+}
+
+function checkStudyAlerts() {
+  if (!studyDb) return
+  const due = studyDb.consumeDueAlerts(new Date().toISOString())
+  for (const task of due.tasks) {
+    const body = [task.courseName, task.startTime ? `Start at ${task.startTime}` : 'Scheduled for today']
+      .filter(Boolean)
+      .join(' · ')
+    if (Notification.isSupported()) {
+      const notification = new Notification({ title: task.title, body })
+      notification.on('click', showMainWindow)
+      notification.show()
+    }
+    win?.webContents.send('study:alert', { type: 'task', task })
+  }
+  if (due.focus) {
+    const isBreak = due.focus.mode === 'break'
+    const title = isBreak ? 'Break finished' : 'Focus session finished'
+    const body = isBreak ? 'Ready for the next study session?' : `${due.focus.label} is complete.`
+    if (Notification.isSupported()) {
+      const notification = new Notification({ title, body })
+      notification.on('click', showMainWindow)
+      notification.show()
+    }
+    win?.webContents.send('study:alert', { type: 'focus', session: due.focus })
+  }
+}
+
 function normalizeNotebookCourse(course: NotebookCourse): NotebookCourse {
   if (!course?.courseKey?.trim()) throw new Error('Invalid course key')
   const courseKey = course.courseKey.trim()
@@ -337,11 +399,41 @@ function createWindow() {
     win?.webContents.send('main-process-message', new Date().toLocaleString())
   })
 
+  win.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    win?.hide()
+  })
+
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
   } else {
     win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
+}
+
+function showMainWindow() {
+  if (!win || win.isDestroyed()) createWindow()
+  win?.show()
+  win?.focus()
+}
+
+function createTray() {
+  if (tray) return
+  tray = new Tray(getAppIconPath())
+  tray.setToolTip('GTIIT Campus Dashboard')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Campus Dashboard', click: showMainWindow },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      },
+    },
+  ]))
+  tray.on('double-click', showMainWindow)
 }
 
 function sendUpdaterStatus(payload: UpdaterStatusPayload) {
@@ -460,6 +552,179 @@ function registerIpcHandlers() {
   })
   handle('notebook:course:open-folder', (_event, payload: { course: NotebookCourse }) => {
     return ensureNotebookService().openCourseFolder({ course: normalizeNotebookCourse(payload.course) })
+  })
+
+  handle('study:tasks:list', (_event, payload: { fromDate: string; toDate: string }) => {
+    return ensureStudyDb().listTasks(payload.fromDate, payload.toDate)
+  })
+  handle('study:task:create', (_event, payload: StudyTaskInput) => {
+    return ensureStudyDb().createTask(validateStudyTaskInput(payload))
+  })
+  handle('study:task:update', (_event, payload: { id: number; patch: Partial<StudyTaskInput & { status: 'todo' | 'done' }> }) => {
+    const current = ensureStudyDb().getTask(payload.id)
+    if (!current) throw new Error('Study task not found')
+    const merged = validateStudyTaskInput({ ...current, ...payload.patch })
+    return ensureStudyDb().updateTask(payload.id, { ...merged, status: payload.patch.status })
+  })
+  handle('study:task:delete', (_event, payload: { id: number }) => {
+    return ensureStudyDb().deleteTask(payload.id)
+  })
+  handle('study:csv:save-template', async () => {
+    const options = {
+      title: 'Save study task CSV template',
+      defaultPath: 'study-tasks-template.csv',
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true, filePath: null }
+    await writeFile(result.filePath, csvTemplateContent(), 'utf8')
+    return { canceled: false, filePath: result.filePath }
+  })
+  handle('study:csv:export', async () => {
+    const options = {
+      title: 'Export study tasks',
+      defaultPath: 'study-tasks-export.csv',
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true, filePath: null, count: 0 }
+    const courses = ensureServices().dashboardDb.getDashboardSnapshot().courses
+    const tasks = ensureStudyDb().listTasks('0000-01-01', '9999-12-31').map((task) => ({
+      ...task,
+      courseCode: courses.find((course) => course.courseKey === task.courseKey)?.courseCode ?? '',
+    }))
+    await writeFile(result.filePath, csvTasksContent(tasks), 'utf8')
+    return { canceled: false, filePath: result.filePath, count: tasks.length }
+  })
+  handle('study:calendar:export-pdf', async () => {
+    const tasks = ensureStudyDb().listTasks('0000-01-01', '9999-12-31')
+    if (!tasks.length) throw new Error('Add at least one study task before exporting a calendar.')
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          title: 'Export study calendar PDF',
+          defaultPath: 'study-calendar.pdf',
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        })
+      : await dialog.showSaveDialog({
+          title: 'Export study calendar PDF',
+          defaultPath: 'study-calendar.pdf',
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        })
+    if (result.canceled || !result.filePath) return { canceled: true, filePath: null, count: 0 }
+
+    const printWindow = new BrowserWindow({
+      show: false,
+      width: 1123,
+      height: 794,
+      webPreferences: { sandbox: true },
+    })
+    try {
+      const html = buildStudyCalendarHtml(tasks)
+      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+      const pdf = await printWindow.webContents.printToPDF({
+        landscape: true,
+        printBackground: true,
+        pageSize: 'A4',
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
+        preferCSSPageSize: true,
+      })
+      await writeFile(result.filePath, pdf)
+      return { canceled: false, filePath: result.filePath, count: tasks.length }
+    } finally {
+      if (!printWindow.isDestroyed()) printWindow.destroy()
+    }
+  })
+  handle('study:csv:preview', async (_event, payload: { filePath: string }) => {
+    const preview = await parseStudyTaskCsv(payload.filePath)
+    const courses = ensureServices().dashboardDb.getDashboardSnapshot().courses
+    preview.rows = preview.rows.map((row) => {
+      const match = courses.find((course) =>
+        (row.courseCode && course.courseCode.toLowerCase() === row.courseCode.toLowerCase())
+        || (row.courseName && course.courseName.toLowerCase() === row.courseName.toLowerCase()),
+      )
+      if (match) {
+        row.courseKey = match.courseKey
+        row.courseName = match.courseName
+      } else if (row.courseCode) {
+        row.warnings.push(`course_code ${row.courseCode} was not found; course name will be kept as text`)
+      }
+      if (row.id && !ensureStudyDb().getTask(row.id)) {
+        row.errors.push(`task id ${row.id} does not exist`)
+      }
+      if (!row.id && !row.errors.length) {
+        const duplicate = ensureStudyDb().findDuplicateTask(row)
+        if (duplicate) {
+          row.warnings.push(`possible duplicate of task ${duplicate.id}`)
+          row.action = 'skip'
+        }
+      }
+      if (row.errors.length) row.action = 'invalid'
+      return row
+    })
+    return preview
+  })
+  handle('study:csv:commit', (_event, payload: {
+    fileName: string
+    rows: CsvTaskRow[]
+    duplicateStrategy: 'skip' | 'update' | 'create'
+  }) => {
+    const validRows = payload.rows.filter((row) => !row.errors?.length).map((row) => ({
+      ...validateStudyTaskInput(row),
+      ...(row.id ? { id: row.id } : {}),
+    }))
+    return ensureStudyDb().importTasks({
+      rows: validRows,
+      fileName: payload.fileName || 'study-tasks.csv',
+      duplicateStrategy: payload.duplicateStrategy === 'update' || payload.duplicateStrategy === 'create'
+        ? payload.duplicateStrategy
+        : 'skip',
+    })
+  })
+  handle('study:csv:undo', (_event, payload: { batchId: string }) => ensureStudyDb().undoImport(payload.batchId))
+  handle('study:tasks:bulk-update', (_event, payload: {
+    ids: number[]
+    operation: 'complete' | 'reopen' | 'move-days' | 'priority' | 'duration' | 'delete'
+    value?: number
+  }) => ensureStudyDb().bulkUpdateTasks(payload))
+  handle('study:exams:list', () => ensureStudyDb().listPersonalExams())
+  handle('study:exam:create', (_event, payload: {
+    courseKey?: string
+    courseName?: string
+    examSession?: string
+    startsAt?: string
+    durationMinutes?: number
+    venue?: string
+  }) => {
+    const courseName = payload.courseName?.trim()
+    const startsAt = payload.startsAt?.trim()
+    if (!courseName) throw new Error('Exam course name is required')
+    if (!startsAt || Number.isNaN(new Date(startsAt).getTime())) throw new Error('A valid exam date is required')
+    return ensureStudyDb().createPersonalExam({
+      courseKey: payload.courseKey?.trim() ?? '',
+      courseName,
+      examSession: payload.examSession?.trim() || 'A',
+      startsAt,
+      durationMinutes: Math.min(720, Math.max(1, Math.round(Number(payload.durationMinutes) || 180))),
+      venue: payload.venue?.trim() ?? '',
+    })
+  })
+  handle('study:exam:delete', (_event, payload: { id: number }) => ensureStudyDb().deletePersonalExam(payload.id))
+  handle('study:focus:get-active', () => ensureStudyDb().getActiveFocus() ?? null)
+  handle('study:focus:start', (_event, payload: { taskId?: number | null; label?: string; mode?: 'focus' | 'break'; durationSeconds?: number }) => {
+    const durationSeconds = Math.min(4 * 60 * 60, Math.max(60, Math.round(Number(payload.durationSeconds) || 25 * 60)))
+    return ensureStudyDb().startFocus({
+      taskId: payload.taskId ?? null,
+      label: payload.label?.trim() || (payload.mode === 'break' ? 'Break' : 'Focus session'),
+      mode: payload.mode === 'break' ? 'break' : 'focus',
+      durationSeconds,
+    })
+  })
+  handle('study:focus:stop', (_event, payload?: { status?: 'completed' | 'cancelled' }) => {
+    return ensureStudyDb().stopFocus(payload?.status === 'completed' ? 'completed' : 'cancelled')
   })
 
   handle('moodle:login', (_event, payload: { username: string; password: string; rememberPassword?: boolean }) => {
@@ -847,20 +1112,29 @@ async function runAutoSyncIfDue() {
 }
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isQuitting) {
     if (autoSyncTimer) {
       clearInterval(autoSyncTimer)
       autoSyncTimer = null
     }
-    app.quit()
+    if (studyAlertTimer) {
+      clearInterval(studyAlertTimer)
+      studyAlertTimer = null
+    }
     win = null
   }
 })
 
+app.on('before-quit', () => {
+  isQuitting = true
+  if (autoSyncTimer) clearInterval(autoSyncTimer)
+  if (studyAlertTimer) clearInterval(studyAlertTimer)
+  autoSyncTimer = null
+  studyAlertTimer = null
+})
+
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow()
-  }
+  showMainWindow()
 })
 
 app.whenReady().then(() => {
@@ -870,12 +1144,16 @@ app.whenReady().then(() => {
   studentsService = new StudentsService(dashboardDb, () => win)
   transcriptService = new TranscriptService(dashboardDb)
   notebookService = new NotebookService(path.join(app.getPath('userData'), 'course-notes'))
+  studyDb = new StudyDb(path.join(app.getPath('userData'), 'study.sqlite'))
   registerIpcHandlers()
   void runAutoSyncIfDue()
   autoSyncTimer = setInterval(() => {
     void runAutoSyncIfDue()
   }, AUTO_SYNC_CHECK_MS)
+  checkStudyAlerts()
+  studyAlertTimer = setInterval(checkStudyAlerts, STUDY_ALERT_CHECK_MS)
   createWindow()
+  createTray()
   setupAutoUpdaterV2()
 }).catch((error) => {
   console.error('[main] app init failed:', error)

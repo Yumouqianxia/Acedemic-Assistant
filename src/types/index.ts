@@ -157,3 +157,66 @@ export type NotebookIndex = {
   items: NotebookItem[]
   updatedAt: string
 }
+
+export type StudyTask = {
+  id: number
+  courseKey: string
+  courseName: string
+  title: string
+  description: string
+  scheduledDate: string
+  startTime: string
+  estimatedMinutes: number
+  status: 'todo' | 'done'
+  priority: 1 | 2 | 3
+  noteId: string | null
+  reminderAt: string | null
+  reminderFiredAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type StudyTaskInput = Pick<StudyTask, 'title' | 'scheduledDate'> & Partial<Pick<StudyTask,
+  'courseKey' | 'courseName' | 'description' | 'startTime' | 'estimatedMinutes' | 'priority' | 'noteId' | 'reminderAt'
+>>
+
+export type FocusSession = {
+  id: number
+  taskId: number | null
+  label: string
+  mode: 'focus' | 'break'
+  startedAt: string
+  endsAt: string
+  plannedSeconds: number
+  status: 'active' | 'completed' | 'cancelled'
+  endedAt: string | null
+}
+
+export type PersonalExam = {
+  id: number
+  courseKey: string
+  courseName: string
+  examSession: string
+  startsAt: string
+  durationMinutes: number
+  venue: string
+  createdAt: string
+}
+
+export type CsvTaskRow = StudyTaskInput & {
+  rowNumber: number
+  id?: number
+  courseCode: string
+  reminderEnabled: boolean
+  errors: string[]
+  warnings: string[]
+  action: 'create' | 'update' | 'skip' | 'invalid'
+}
+
+export type CsvPreview = {
+  fileName: string
+  headers: string[]
+  rows: CsvTaskRow[]
+  missingHeaders: string[]
+}

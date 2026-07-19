@@ -88,6 +88,69 @@ type NotebookIndex = {
   updatedAt: string
 }
 
+type StudyTask = {
+  id: number
+  courseKey: string
+  courseName: string
+  title: string
+  description: string
+  scheduledDate: string
+  startTime: string
+  estimatedMinutes: number
+  status: 'todo' | 'done'
+  priority: 1 | 2 | 3
+  noteId: string | null
+  reminderAt: string | null
+  reminderFiredAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+type StudyTaskInput = Pick<StudyTask, 'title' | 'scheduledDate'> & Partial<Pick<StudyTask,
+  'courseKey' | 'courseName' | 'description' | 'startTime' | 'estimatedMinutes' | 'priority' | 'noteId' | 'reminderAt'
+>>
+
+type FocusSession = {
+  id: number
+  taskId: number | null
+  label: string
+  mode: 'focus' | 'break'
+  startedAt: string
+  endsAt: string
+  plannedSeconds: number
+  status: 'active' | 'completed' | 'cancelled'
+  endedAt: string | null
+}
+
+type PersonalExam = {
+  id: number
+  courseKey: string
+  courseName: string
+  examSession: string
+  startsAt: string
+  durationMinutes: number
+  venue: string
+  createdAt: string
+}
+
+type CsvTaskRow = StudyTaskInput & {
+  rowNumber: number
+  id?: number
+  courseCode: string
+  reminderEnabled: boolean
+  errors: string[]
+  warnings: string[]
+  action: 'create' | 'update' | 'skip' | 'invalid'
+}
+
+type CsvPreview = {
+  fileName: string
+  headers: string[]
+  rows: CsvTaskRow[]
+  missingHeaders: string[]
+}
+
 const electronAPI = {
   ping(message: string) {
     return ipcRenderer.invoke('ipc-test:ping', message)
@@ -176,6 +239,71 @@ const electronAPI = {
   },
   notebookOpenCourseFolder(payload: { course: NotebookCourse }) {
     return ipcRenderer.invoke('notebook:course:open-folder', payload) as Promise<boolean>
+  },
+  studyTasksList(payload: { fromDate: string; toDate: string }) {
+    return ipcRenderer.invoke('study:tasks:list', payload) as Promise<StudyTask[]>
+  },
+  studyTaskCreate(payload: StudyTaskInput) {
+    return ipcRenderer.invoke('study:task:create', payload) as Promise<StudyTask>
+  },
+  studyTaskUpdate(payload: { id: number; patch: Partial<StudyTaskInput & { status: 'todo' | 'done' }> }) {
+    return ipcRenderer.invoke('study:task:update', payload) as Promise<StudyTask>
+  },
+  studyTaskDelete(payload: { id: number }) {
+    return ipcRenderer.invoke('study:task:delete', payload) as Promise<boolean>
+  },
+  studyCsvSaveTemplate() {
+    return ipcRenderer.invoke('study:csv:save-template') as Promise<{ canceled: boolean; filePath: string | null }>
+  },
+  studyCsvExport() {
+    return ipcRenderer.invoke('study:csv:export') as Promise<{ canceled: boolean; filePath: string | null; count: number }>
+  },
+  studyCalendarExportPdf() {
+    return ipcRenderer.invoke('study:calendar:export-pdf') as Promise<{ canceled: boolean; filePath: string | null; count: number }>
+  },
+  studyCsvPreview(payload: { filePath: string }) {
+    return ipcRenderer.invoke('study:csv:preview', payload) as Promise<CsvPreview>
+  },
+  studyCsvCommit(payload: { fileName: string; rows: CsvTaskRow[]; duplicateStrategy: 'skip' | 'update' | 'create' }) {
+    return ipcRenderer.invoke('study:csv:commit', payload) as Promise<{
+      batchId: string
+      created: number
+      updated: number
+      skipped: number
+    }>
+  },
+  studyCsvUndo(payload: { batchId: string }) {
+    return ipcRenderer.invoke('study:csv:undo', payload) as Promise<{ restored: number }>
+  },
+  studyTasksBulkUpdate(payload: {
+    ids: number[]
+    operation: 'complete' | 'reopen' | 'move-days' | 'priority' | 'duration' | 'delete'
+    value?: number
+  }) {
+    return ipcRenderer.invoke('study:tasks:bulk-update', payload) as Promise<{ changed: number }>
+  },
+  studyExamsList() {
+    return ipcRenderer.invoke('study:exams:list') as Promise<PersonalExam[]>
+  },
+  studyExamCreate(payload: { courseKey?: string; courseName: string; examSession?: string; startsAt: string; durationMinutes?: number; venue?: string }) {
+    return ipcRenderer.invoke('study:exam:create', payload) as Promise<PersonalExam>
+  },
+  studyExamDelete(payload: { id: number }) {
+    return ipcRenderer.invoke('study:exam:delete', payload) as Promise<boolean>
+  },
+  studyFocusGetActive() {
+    return ipcRenderer.invoke('study:focus:get-active') as Promise<FocusSession | null>
+  },
+  studyFocusStart(payload: { taskId?: number | null; label?: string; mode?: 'focus' | 'break'; durationSeconds?: number }) {
+    return ipcRenderer.invoke('study:focus:start', payload) as Promise<FocusSession>
+  },
+  studyFocusStop(payload?: { status?: 'completed' | 'cancelled' }) {
+    return ipcRenderer.invoke('study:focus:stop', payload) as Promise<FocusSession | null>
+  },
+  onStudyAlert(callback: (payload: { type: 'task' | 'focus'; task?: StudyTask; session?: FocusSession }) => void) {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { type: 'task' | 'focus'; task?: StudyTask; session?: FocusSession }) => callback(payload)
+    ipcRenderer.on('study:alert', listener)
+    return () => ipcRenderer.off('study:alert', listener)
   },
   onMainMessage(callback: (message: string) => void) {
     const listener = (_event: Electron.IpcRendererEvent, message: string) => callback(message)

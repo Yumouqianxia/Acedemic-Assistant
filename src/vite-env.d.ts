@@ -1,5 +1,68 @@
 /// <reference types="vite/client" />
 
+type RendererStudyTask = {
+  id: number
+  courseKey: string
+  courseName: string
+  title: string
+  description: string
+  scheduledDate: string
+  startTime: string
+  estimatedMinutes: number
+  status: 'todo' | 'done'
+  priority: 1 | 2 | 3
+  noteId: string | null
+  reminderAt: string | null
+  reminderFiredAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+type RendererStudyTaskInput = Pick<RendererStudyTask, 'title' | 'scheduledDate'> & Partial<Pick<RendererStudyTask,
+  'courseKey' | 'courseName' | 'description' | 'startTime' | 'estimatedMinutes' | 'priority' | 'noteId' | 'reminderAt'
+>>
+
+type RendererFocusSession = {
+  id: number
+  taskId: number | null
+  label: string
+  mode: 'focus' | 'break'
+  startedAt: string
+  endsAt: string
+  plannedSeconds: number
+  status: 'active' | 'completed' | 'cancelled'
+  endedAt: string | null
+}
+
+type RendererPersonalExam = {
+  id: number
+  courseKey: string
+  courseName: string
+  examSession: string
+  startsAt: string
+  durationMinutes: number
+  venue: string
+  createdAt: string
+}
+
+type RendererCsvTaskRow = RendererStudyTaskInput & {
+  rowNumber: number
+  id?: number
+  courseCode: string
+  reminderEnabled: boolean
+  errors: string[]
+  warnings: string[]
+  action: 'create' | 'update' | 'skip' | 'invalid'
+}
+
+type RendererCsvPreview = {
+  fileName: string
+  headers: string[]
+  rows: RendererCsvTaskRow[]
+  missingHeaders: string[]
+}
+
 interface Window {
   electronAPI: {
     ping: (message: string) => Promise<string>
@@ -552,5 +615,36 @@ interface Window {
       } | null
       studentsError: string | null
     }>
+    studyTasksList: (payload: { fromDate: string; toDate: string }) => Promise<RendererStudyTask[]>
+    studyTaskCreate: (payload: RendererStudyTaskInput) => Promise<RendererStudyTask>
+    studyTaskUpdate: (payload: { id: number; patch: Partial<RendererStudyTaskInput & { status: 'todo' | 'done' }> }) => Promise<RendererStudyTask>
+    studyTaskDelete: (payload: { id: number }) => Promise<boolean>
+    studyCsvSaveTemplate: () => Promise<{ canceled: boolean; filePath: string | null }>
+    studyCsvExport: () => Promise<{ canceled: boolean; filePath: string | null; count: number }>
+    studyCalendarExportPdf: () => Promise<{ canceled: boolean; filePath: string | null; count: number }>
+    studyCsvPreview: (payload: { filePath: string }) => Promise<RendererCsvPreview>
+    studyCsvCommit: (payload: { fileName: string; rows: RendererCsvTaskRow[]; duplicateStrategy: 'skip' | 'update' | 'create' }) => Promise<{
+      batchId: string
+      created: number
+      updated: number
+      skipped: number
+    }>
+    studyCsvUndo: (payload: { batchId: string }) => Promise<{ restored: number }>
+    studyTasksBulkUpdate: (payload: {
+      ids: number[]
+      operation: 'complete' | 'reopen' | 'move-days' | 'priority' | 'duration' | 'delete'
+      value?: number
+    }) => Promise<{ changed: number }>
+    studyExamsList: () => Promise<RendererPersonalExam[]>
+    studyExamCreate: (payload: { courseKey?: string; courseName: string; examSession?: string; startsAt: string; durationMinutes?: number; venue?: string }) => Promise<RendererPersonalExam>
+    studyExamDelete: (payload: { id: number }) => Promise<boolean>
+    studyFocusGetActive: () => Promise<RendererFocusSession | null>
+    studyFocusStart: (payload: { taskId?: number | null; label?: string; mode?: 'focus' | 'break'; durationSeconds?: number }) => Promise<RendererFocusSession>
+    studyFocusStop: (payload?: { status?: 'completed' | 'cancelled' }) => Promise<RendererFocusSession | null>
+    onStudyAlert: (callback: (payload: {
+      type: 'task' | 'focus'
+      task?: RendererStudyTask
+      session?: RendererFocusSession
+    }) => void) => () => void
   }
 }

@@ -126,6 +126,44 @@ async function openLocalFile(filePath: string) {
   if (openError) throw new Error(openError)
 }
 
+type RemoteResponse = {
+  statusCode: number
+  headers: Record<string, string | string[]>
+  data: Buffer
+}
+
+function getRemoteHeader(headers: Record<string, string | string[]>, name: string) {
+  const raw = headers[name] ?? headers[name.toLowerCase()]
+  return Array.isArray(raw) ? raw.join('; ') : String(raw ?? '')
+}
+
+function requestRemoteBuffer(url: string, method: 'GET' | 'HEAD' = 'GET') {
+  return new Promise<RemoteResponse>((resolve, reject) => {
+    const request = net.request({ url, method })
+    const chunks: Buffer[] = []
+    request.on('redirect', () => {
+      request.followRedirect()
+    })
+    request.on('response', (response) => {
+      response.on('data', (chunk) => {
+        if (method !== 'HEAD') {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+      })
+      response.on('end', () => {
+        resolve({
+          statusCode: response.statusCode,
+          headers: response.headers as Record<string, string | string[]>,
+          data: Buffer.concat(chunks),
+        })
+      })
+      response.on('error', reject)
+    })
+    request.on('error', reject)
+    request.end()
+  })
+}
+
 async function downloadAndOpenRemoteFile(
   url: string,
   preferredFilename?: string,
@@ -171,15 +209,14 @@ async function downloadAndOpenRemoteFile(
   }
 
   const downloadTask = (async () => {
-    const response = await net.fetch(url, { method: 'GET' })
-    if (!response.ok) {
-      throw new Error(`下载失败 (HTTP ${response.status})`)
+    const response = await requestRemoteBuffer(url, 'GET')
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`Download failed (HTTP ${response.statusCode})`)
     }
     const outputPath = reuseExisting
       ? reusableOutputPath
       : await pickAvailablePath(downloadDir, finalName)
-    const bytes = await response.arrayBuffer()
-    await writeFile(outputPath, Buffer.from(bytes))
+    await writeFile(outputPath, response.data)
     if (reuseExisting) downloadedFileCache.set(cacheKey, outputPath)
     return { filePath: outputPath }
   })()
@@ -225,11 +262,12 @@ async function downloadCourseResources(payload: {
     await ensureDirectory(sectionDir)
     const filename = sanitizeFilename(resource.filename || path.basename(new URL(resource.fileurl).pathname) || 'resource')
     try {
-      const response = await net.fetch(resource.fileurl, { method: 'GET' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const response = await requestRemoteBuffer(resource.fileurl, 'GET')
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw new Error(`HTTP ${response.statusCode}`)
+      }
       const outputPath = await pickAvailablePath(sectionDir, filename)
-      const bytes = await response.arrayBuffer()
-      await writeFile(outputPath, Buffer.from(bytes))
+      await writeFile(outputPath, response.data)
       results.push({ filename, filePath: outputPath, ok: true })
     } catch (error) {
       results.push({
@@ -821,10 +859,10 @@ function registerIpcHandlers() {
     // Some Moodle instances still respond with attachment content-disposition
     // even when forcedownload is not explicit in the URL.
     try {
-      const headResp = await net.fetch(payload.url, { method: 'HEAD' })
-      if (headResp.ok) {
-        const contentDisposition = (headResp.headers.get('content-disposition') || '').toLowerCase()
-        const contentType = (headResp.headers.get('content-type') || '').toLowerCase()
+      const headResp = await requestRemoteBuffer(payload.url, 'HEAD')
+      if (headResp.statusCode >= 200 && headResp.statusCode < 300) {
+        const contentDisposition = getRemoteHeader(headResp.headers, 'content-disposition').toLowerCase()
+        const contentType = getRemoteHeader(headResp.headers, 'content-type').toLowerCase()
         const isAttachment = contentDisposition.includes('attachment')
         const isPdf = contentType.includes('pdf')
         if (isAttachment || (contentType && !isPdf)) {

@@ -16,6 +16,7 @@ import {
   ArrowUp,
   FolderOpened,
   Download,
+  EditPen,
 } from '@element-plus/icons-vue'
 
 type UnifiedCourse = {
@@ -76,7 +77,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   back: []
-  openSubmission: [payload: { cmid: number; courseId: number; assignName: string; courseName: string }]
+  openSubmission: [payload: {
+    cmid: number
+    courseId: number
+    activityName: string
+    courseName: string
+    moduleName: 'assign' | 'quiz'
+    actionUrl: string
+  }]
 }>()
 
 const collapsedSections = ref(new Set<number>())
@@ -514,10 +522,30 @@ const downloadSectionResources = (section: MoodleSection) => {
               </div>
               <button
                 class="cd-action-btn cd-action-btn--assign"
-                @click="emit('openSubmission', { cmid: mod.id, courseId: course.moodleCourseId!, assignName: mod.name, courseName: course.courseName })"
+                @click="emit('openSubmission', { cmid: mod.id, courseId: course.moodleCourseId!, activityName: mod.name, courseName: course.courseName, moduleName: 'assign', actionUrl: mod.url })"
               >
                 <el-icon><DocumentCopy /></el-icon>
                 提交作业
+              </button>
+            </div>
+
+            <!-- Quiz module -->
+            <div v-else-if="mod.modname === 'quiz'" class="cd-file-card cd-file-card--quiz">
+              <div class="cd-file-ext-badge cd-file-ext-badge--quiz">
+                <el-icon :size="18"><EditPen /></el-icon>
+              </div>
+              <div class="cd-file-body">
+                <div class="cd-file-name" :title="mod.name">{{ mod.name }}</div>
+                <div class="cd-file-sub">
+                  <span class="cd-file-type-tag cd-file-type-tag--quiz">quiz</span>
+                </div>
+              </div>
+              <button
+                class="cd-action-btn cd-action-btn--quiz"
+                @click="emit('openSubmission', { cmid: mod.id, courseId: course.moodleCourseId!, activityName: mod.name, courseName: course.courseName, moduleName: 'quiz', actionUrl: mod.url })"
+              >
+                <el-icon><EditPen /></el-icon>
+                View Quiz
               </button>
             </div>
 
@@ -993,6 +1021,11 @@ const downloadSectionResources = (section: MoodleSection) => {
   color: var(--cd-badge-assign-text);
 }
 
+.cd-file-ext-badge--quiz {
+  background: color-mix(in srgb, var(--accent-p) 18%, var(--bg-surface));
+  color: var(--accent-p);
+}
+
 .cd-file-ext-badge--url {
   background: var(--cd-badge-url-bg);
   color: var(--cd-badge-url-text);
@@ -1043,6 +1076,11 @@ const downloadSectionResources = (section: MoodleSection) => {
 .cd-file-type-tag--assign {
   color: var(--cd-badge-assign-text);
   background: var(--cd-badge-assign-bg);
+}
+
+.cd-file-type-tag--quiz {
+  color: var(--accent-p);
+  background: color-mix(in srgb, var(--accent-p) 12%, var(--bg-surface));
 }
 
 .cd-file-module-name,
@@ -1118,6 +1156,24 @@ const downloadSectionResources = (section: MoodleSection) => {
 .cd-action-btn--assign:hover {
   background: var(--cd-action-assign-border);
   color: #fff;
+}
+
+.cd-action-btn--quiz {
+  background: color-mix(in srgb, var(--accent-p) 10%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent-p) 55%, var(--border));
+  color: var(--accent-p);
+  min-width: 100px;
+}
+
+.cd-action-btn--quiz:hover {
+  background: var(--accent-p);
+  border-color: var(--accent-p);
+  color: #fff;
+}
+
+.cd-action-btn--quiz:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent-p) 40%, transparent);
+  outline-offset: 2px;
 }
 
 /* ── Loading / empty states ──────────────────────────────────── */

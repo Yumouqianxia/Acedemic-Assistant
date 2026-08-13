@@ -95,6 +95,29 @@ type MoodleAssignmentsResponse = {
   courses: Array<{ id: number; assignments: MoodleAssignmentRaw[] }>
 }
 
+type MoodleQuizRaw = {
+  id: number
+  coursemodule: number
+  name: string
+  intro?: string
+  timeopen?: number
+  timeclose?: number
+  timelimit?: number
+  attempts?: number
+  grademethod?: number
+  sumgrades?: number
+  grade?: number
+}
+
+type MoodleQuizAttemptRaw = {
+  id: number
+  attempt: number
+  state: string
+  timestart: number
+  timefinish: number
+  sumgrades?: number | null
+}
+
 type MoodleSubmissionPlugin = {
   type: string
   name: string
@@ -182,6 +205,34 @@ export type SubmissionStatus = {
   gradedAt: number | null
   grader: { id: number; fullName: string; email: string | null } | null
   feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
+}
+
+export type QuizDetail = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  timeOpen: number
+  timeClose: number
+  timeLimit: number
+  attemptsAllowed: number
+  gradingMethod: string
+  maxRawMark: number
+  maxGrade: number
+  bestGrade: number | null
+  status: 'upcoming' | 'open' | 'in-progress' | 'finished' | 'closed'
+  canAttempt: boolean
+  viewUrl: string
+  attempts: Array<{
+    id: number
+    attemptNumber: number
+    state: string
+    startedAt: number
+    finishedAt: number
+    rawMark: number | null
+    grade: number | null
+    reviewUrl: string
+  }>
 }
 
 export type UploadedFile = {
@@ -939,6 +990,141 @@ export class MoodleService {
         mimetype: f.mimetype,
       })),
     }
+  }
+
+  async getQuizDetail(payload: { cmid: number; courseId: number; username?: string }): Promise<QuizDetail> {
+    const sess = this.ensureSession(payload?.username)
+    const moduleData = await this.callMoodleWs<{ cm: { instance: number; modname: string } }>(
+      'core_course_get_course_module', sess.token, { cmid: payload.cmid },
+    )
+    if (moduleData.cm.modname !== 'quiz') throw new Error('The selected course item is not a Quiz')
+
+    const quizId = moduleData.cm.instance
+    const [quizzesData, attemptsData] = await Promise.all([
+      this.callMoodleWs<{ quizzes?: MoodleQuizRaw[] }>(
+        'mod_quiz_get_quizzes_by_courses', sess.token, { 'courseids[0]': payload.courseId },
+      ),
+      this.callMoodleWs<{ attempts?: MoodleQuizAttemptRaw[] }>(
+        'mod_quiz_get_user_attempts', sess.token, { quizid: quizId, userid: 0, status: 'all', includepreviews: 0 },
+      ),
+    ])
+    const quiz = (quizzesData.quizzes ?? []).find((item) => item.id === quizId || item.coursemodule === payload.cmid)
+    if (!quiz) throw new Error(`Quiz details were not found for cmid=${payload.cmid}`)
+
+    let bestGrade: number | null = null
+    try {
+      const best = await this.callMoodleWs<{ hasgrade?: boolean; grade?: number }>(
+        'mod_quiz_get_user_best_grade', sess.token, { quizid: quizId, userid: 0 },
+      )
+      if (best.hasgrade && typeof best.grade === 'number' && Number.isFinite(best.grade)) bestGrade = best.grade
+    } catch (error) {
+      console.warn('[moodle] quiz best grade unavailable', error)
+    }
+
+    const maxRawMark = Number(quiz.sumgrades) || 0
+    const maxGrade = Number(quiz.grade) || 0
+    const attempts = (attemptsData.attempts ?? []).map((attempt) => {
+      const rawMark = typeof attempt.sumgrades === 'number' && Number.isFinite(attempt.sumgrades)
+        ? attempt.sumgrades
+        : null
+      const grade = rawMark != null && maxRawMark > 0 ? (rawMark / maxRawMark) * maxGrade : null
+      return {
+        id: attempt.id,
+        // Moodle's external API already returns the user-facing, 1-based
+        // attempt number (1, 2, 3...). Do not offset it again here.
+        attemptNumber: attempt.attempt,
+        state: attempt.state,
+        startedAt: attempt.timestart || 0,
+        finishedAt: attempt.timefinish || 0,
+        rawMark,
+        grade,
+        reviewUrl: `${MOODLE_BASE}/mod/quiz/review.php?attempt=${attempt.id}`,
+      }
+    })
+    const now = Math.floor(Date.now() / 1000)
+    const unfinished = attempts.some((attempt) => attempt.state === 'inprogress' || attempt.state === 'overdue')
+    const finishedCount = attempts.filter((attempt) => attempt.state === 'finished').length
+    const usedAttempts = attempts.length
+    const timeOpen = quiz.timeopen || 0
+    const timeClose = quiz.timeclose || 0
+    const attemptsAllowed = quiz.attempts || 0
+    const withinWindow = (!timeOpen || now >= timeOpen) && (!timeClose || now <= timeClose)
+    const hasAttemptsRemaining = attemptsAllowed === 0 || usedAttempts < attemptsAllowed
+    const canAttempt = withinWindow && (unfinished || hasAttemptsRemaining)
+    const status: QuizDetail['status'] = timeOpen && now < timeOpen
+      ? 'upcoming'
+      : timeClose && now > timeClose
+        ? 'closed'
+        : unfinished
+          ? 'in-progress'
+          : finishedCount
+            ? 'finished'
+            : 'open'
+    const gradingMethods: Record<number, string> = {
+      1: 'Highest grade',
+      2: 'Average grade',
+      3: 'First attempt',
+      4: 'Last attempt',
+    }
+
+    return {
+      id: quiz.id,
+      cmid: payload.cmid,
+      name: quiz.name,
+      intro: quiz.intro ?? '',
+      timeOpen,
+      timeClose,
+      timeLimit: quiz.timelimit || 0,
+      attemptsAllowed,
+      gradingMethod: gradingMethods[quiz.grademethod ?? 0] ?? 'Not specified',
+      maxRawMark,
+      maxGrade,
+      bestGrade,
+      status,
+      canAttempt,
+      viewUrl: `${MOODLE_BASE}/mod/quiz/view.php?id=${payload.cmid}`,
+      attempts,
+    }
+  }
+
+  async getQuizLaunchUrl(payload: { cmid: number; attemptId?: number }): Promise<string> {
+    const targetUrl = payload.attemptId
+      ? `${MOODLE_BASE}/mod/quiz/review.php?attempt=${payload.attemptId}`
+      : `${MOODLE_BASE}/mod/quiz/view.php?id=${payload.cmid}`
+    let loadUrl = targetUrl
+    try {
+      const sess = this.ensureSession()
+      const [siteInfo, autoLogin] = await Promise.all([
+        this.callMoodleWs<MoodleSiteInfo>('core_webservice_get_site_info', sess.token),
+        this.callMoodleWs<{ key?: string }>('tool_mobile_get_autologin_key', sess.token),
+      ])
+      if (autoLogin.key) {
+        const target = new URL(targetUrl)
+        const localTarget = `${target.pathname}${target.search}`
+        loadUrl = `${MOODLE_BASE}/admin/tool/mobile/autologin.php?userid=${siteInfo.userid}&key=${encodeURIComponent(autoLogin.key)}&urltogo=${encodeURIComponent(localTarget)}`
+      }
+    } catch (error) {
+      // Some sites disable mobile auto-login. The shared SSO browser session is
+      // still useful and will either already be authenticated or show Moodle login.
+      console.warn('[moodle] quiz browser auto-login unavailable', error)
+    }
+    return loadUrl
+  }
+
+  async openQuizPage(payload: { cmid: number; attemptId?: number }): Promise<boolean> {
+    const quizWin = new BrowserWindow({
+      width: 1200,
+      height: 820,
+      title: 'GTIIT Moodle Quiz',
+      autoHideMenuBar: true,
+      webPreferences: {
+        partition: 'persist:students',
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+    await quizWin.loadURL(await this.getQuizLaunchUrl(payload))
+    return true
   }
 
   async getSubmissionStatus(payload: { assignId: number; username?: string }): Promise<SubmissionStatus> {

@@ -102,6 +102,36 @@ export type SubmissionStatus = {
   feedbackFiles: Array<{ filename: string; filesize: number; fileurl: string; mimetype: string }>
 }
 
+export type QuizAttempt = {
+  id: number
+  attemptNumber: number
+  state: string
+  startedAt: number
+  finishedAt: number
+  rawMark: number | null
+  grade: number | null
+  reviewUrl: string
+}
+
+export type QuizDetail = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  timeOpen: number
+  timeClose: number
+  timeLimit: number
+  attemptsAllowed: number
+  gradingMethod: string
+  maxRawMark: number
+  maxGrade: number
+  bestGrade: number | null
+  status: 'upcoming' | 'open' | 'in-progress' | 'finished' | 'closed'
+  canAttempt: boolean
+  viewUrl: string
+  attempts: QuizAttempt[]
+}
+
 export type SelectedFile = {
   path: string
   name: string

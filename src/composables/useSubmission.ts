@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue'
-import type { AssignmentDetail, SelectedFile, SubmissionStatus, TimelineEvent } from '../types'
+import type { AssignmentDetail, QuizDetail, SelectedFile, SubmissionStatus, TimelineEvent } from '../types'
 import { user } from './useAuth'
 import { notifyError, notifySuccess, notifyWarning, withTimeout } from './useUtils'
 
@@ -7,14 +7,28 @@ import { notifyError, notifySuccess, notifyWarning, withTimeout } from './useUti
 const submissionEvent = ref<TimelineEvent | null>(null)
 const submissionAssignment = ref<AssignmentDetail | null>(null)
 const submissionStatus = ref<SubmissionStatus | null>(null)
+const submissionQuiz = ref<QuizDetail | null>(null)
 const submissionLoading = ref(false)
 const selectedFiles = ref<SelectedFile[]>([])
 const submitting = ref(false)
 
 const submissionDueDate = computed(() => {
-  const ts = submissionAssignment.value?.duedate
+  const ts = submissionAssignment.value?.duedate ?? submissionQuiz.value?.timeClose
   if (!ts) return null
   return new Date(ts * 1000)
+})
+
+const submissionKind = computed<'assignment' | 'quiz'>(() =>
+  submissionEvent.value?.modulename === 'quiz' ? 'quiz' : 'assignment',
+)
+
+const quizStatusLabel = computed(() => {
+  const status = submissionQuiz.value?.status
+  if (status === 'closed') return { text: 'Closed', color: '#909399' }
+  if (status === 'upcoming') return { text: 'Not Open Yet', color: '#e6a23c' }
+  if (status === 'in-progress') return { text: 'In Progress', color: '#e6a23c' }
+  if (status === 'finished') return { text: 'Attempted', color: '#67c23a' }
+  return { text: 'Open', color: '#409eff' }
 })
 
 const submissionStatusLabel = computed(() => {
@@ -30,8 +44,8 @@ const totalSelectedSize = computed(() =>
 )
 
 const openSubmission = async (event: TimelineEvent): Promise<void> => {
-  if (event.modulename !== 'assign') {
-    notifyWarning('仅支持 Assignment 类型的提交，其他类型请在 Moodle 中操作', '暂不支持')
+  if (event.modulename !== 'assign' && event.modulename !== 'quiz') {
+    notifyWarning('Only Assignment and Quiz activities are supported here.', 'Unsupported activity')
     return
   }
   if (!event.cmid) {
@@ -41,19 +55,52 @@ const openSubmission = async (event: TimelineEvent): Promise<void> => {
   submissionEvent.value = event
   submissionAssignment.value = null
   submissionStatus.value = null
+  submissionQuiz.value = null
   selectedFiles.value = []
   submissionLoading.value = true
   try {
-    const { detail, status } = await window.electronAPI.moodleAssignmentDetailWithStatus({
-      cmid: event.cmid,
-      courseId: event.courseid,
-    })
-    submissionAssignment.value = detail
-    submissionStatus.value = status
+    if (event.modulename === 'quiz') {
+      submissionQuiz.value = await window.electronAPI.moodleQuizDetail({
+        cmid: event.cmid,
+        courseId: event.courseid,
+      })
+    } else {
+      const { detail, status } = await window.electronAPI.moodleAssignmentDetailWithStatus({
+        cmid: event.cmid,
+        courseId: event.courseid,
+      })
+      submissionAssignment.value = detail
+      submissionStatus.value = status
+    }
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : '加载作业详情失败', '加载失败')
+    notifyError(error instanceof Error ? error.message : 'Failed to load activity details', 'Load failed')
   } finally {
     submissionLoading.value = false
+  }
+}
+
+const handleOpenQuiz = async (attemptId?: number): Promise<void> => {
+  if (!submissionQuiz.value) return
+  try {
+    await window.electronAPI.moodleQuizOpen({
+      cmid: submissionQuiz.value.cmid,
+      ...(attemptId ? { attemptId } : {}),
+    })
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : 'Failed to open this Quiz in Moodle', 'Open failed')
+  }
+}
+
+const prepareQuizEmbed = async (attemptId?: number): Promise<string | null> => {
+  if (!submissionQuiz.value) return null
+  try {
+    return await window.electronAPI.moodleQuizLaunchUrl({
+      cmid: submissionQuiz.value.cmid,
+      ...(attemptId ? { attemptId } : {}),
+    })
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : 'Failed to prepare the embedded Quiz', 'Open failed')
+    return null
   }
 }
 
@@ -184,6 +231,7 @@ const clearSubmission = (): void => {
   submissionEvent.value = null
   submissionAssignment.value = null
   submissionStatus.value = null
+  submissionQuiz.value = null
   selectedFiles.value = []
 }
 
@@ -192,17 +240,22 @@ export function useSubmission() {
     submissionEvent,
     submissionAssignment,
     submissionStatus,
+    submissionQuiz,
     submissionLoading,
     selectedFiles,
     submitting,
     submissionDueDate,
+    submissionKind,
     submissionStatusLabel,
+    quizStatusLabel,
     totalSelectedSize,
     openSubmission,
     handleSelectFiles,
     handleAddLocalFiles,
     handleRemoveFile,
     handleSubmit,
+    handleOpenQuiz,
+    prepareQuizEmbed,
     clearSubmission,
   }
 }

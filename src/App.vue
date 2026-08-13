@@ -308,26 +308,28 @@ const handleCheckUpdates = async () => {
 const handleOpenSubmissionFromCourse = (payload: {
   cmid: number
   courseId: number
-  assignName: string
+  activityName: string
   courseName: string
+  moduleName: 'assign' | 'quiz'
+  actionUrl: string
 }) => {
   const syntheticEvent: TimelineEvent = {
     id: 0,
-    name: payload.assignName,
+    name: payload.activityName,
     description: '',
     courseid: payload.courseId,
     coursename: payload.courseName,
     timestart: 0,
     timesort: 0,
-    modulename: 'assign',
+    modulename: payload.moduleName,
     cmid: payload.cmid,
-    actionUrl: '',
+    actionUrl: payload.actionUrl,
   }
   void handleOpenSubmission(syntheticEvent)
 }
 
 const handleOpenSubmission = async (event: TimelineEvent) => {
-  if (event.modulename !== 'assign' || !event.cmid) {
+  if (!['assign', 'quiz'].includes(event.modulename) || !event.cmid) {
     // openSubmission will show the appropriate warning; stay on current stage
     void openSubmission(event)
     return

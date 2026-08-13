@@ -50,6 +50,34 @@ type MoodleSection = {
   }>
 }
 
+type QuizDetail = {
+  id: number
+  cmid: number
+  name: string
+  intro: string
+  timeOpen: number
+  timeClose: number
+  timeLimit: number
+  attemptsAllowed: number
+  gradingMethod: string
+  maxRawMark: number
+  maxGrade: number
+  bestGrade: number | null
+  status: 'upcoming' | 'open' | 'in-progress' | 'finished' | 'closed'
+  canAttempt: boolean
+  viewUrl: string
+  attempts: Array<{
+    id: number
+    attemptNumber: number
+    state: string
+    startedAt: number
+    finishedAt: number
+    rawMark: number | null
+    grade: number | null
+    reviewUrl: string
+  }>
+}
+
 type ThemeMode = 'light' | 'dark' | 'system'
 type Language = 'zh-CN' | 'en-US'
 type AutoSyncIntervalHours = 0 | 6 | 24
@@ -450,6 +478,15 @@ const electronAPI = {
   },
   moodleAssignmentSaveSubmission(payload: { assignId: number; draftItemId: number; username?: string }) {
     return ipcRenderer.invoke('moodle:assignment:save-submission', payload) as Promise<boolean>
+  },
+  moodleQuizDetail(payload: { cmid: number; courseId: number; username?: string }) {
+    return ipcRenderer.invoke('moodle:quiz:detail', payload) as Promise<QuizDetail>
+  },
+  moodleQuizOpen(payload: { cmid: number; attemptId?: number }) {
+    return ipcRenderer.invoke('moodle:quiz:open', payload) as Promise<boolean>
+  },
+  moodleQuizLaunchUrl(payload: { cmid: number; attemptId?: number }) {
+    return ipcRenderer.invoke('moodle:quiz:launch-url', payload) as Promise<string>
   },
   openPdfViewer(payload: { url: string; title?: string }) {
     return ipcRenderer.invoke('file:open-pdf', payload) as Promise<boolean>

@@ -848,6 +848,15 @@ function registerIpcHandlers() {
   handle('moodle:assignment:save-submission', (_event, payload: { assignId: number; draftItemId: number; username?: string }) => {
     return ensureServices().moodleService.saveSubmission(payload)
   })
+  handle('moodle:quiz:detail', (_event, payload: { cmid: number; courseId: number; username?: string }) => {
+    return ensureServices().moodleService.getQuizDetail(payload)
+  })
+  handle('moodle:quiz:open', (_event, payload: { cmid: number; attemptId?: number }) => {
+    return ensureServices().moodleService.openQuizPage(payload)
+  })
+  handle('moodle:quiz:launch-url', (_event, payload: { cmid: number; attemptId?: number }) => {
+    return ensureServices().moodleService.getQuizLaunchUrl(payload)
+  })
 
   // ── PDF / file viewer ─────────────────────────────────────────────────────
   handle('file:open-pdf', async (_event, payload: { url: string; title?: string }) => {

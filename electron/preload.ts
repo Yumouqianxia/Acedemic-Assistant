@@ -78,6 +78,25 @@ type QuizDetail = {
   }>
 }
 
+type AiApiMode = 'responses' | 'chat-completions'
+type AiProviderConfig = {
+  baseUrl: string
+  model: string
+  apiMode: AiApiMode
+  hasApiKey: boolean
+  secureStorageAvailable: boolean
+}
+type HomeworkQuestion = {
+  id: string
+  number: string
+  prompt: string
+  options: string[]
+  answerType: string
+  currentAnswer: string
+  formulas: string[]
+  images: Array<{ src: string; alt: string; dataUrl?: string }>
+}
+
 type ThemeMode = 'light' | 'dark' | 'system'
 type Language = 'zh-CN' | 'en-US'
 type AutoSyncIntervalHours = 0 | 6 | 24
@@ -194,6 +213,22 @@ const electronAPI = {
   },
   appPreferencesUpdate(payload: Partial<AppPreferences>) {
     return ipcRenderer.invoke('app:preferences:update', payload) as Promise<AppPreferences>
+  },
+  aiHomeworkConfigGet() {
+    return ipcRenderer.invoke('ai-homework:config:get') as Promise<AiProviderConfig>
+  },
+  aiHomeworkConfigSave(payload: {
+    baseUrl: string
+    model: string
+    apiMode: AiApiMode
+    apiKey?: string
+    clearApiKey?: boolean
+  }) {
+    return ipcRenderer.invoke('ai-homework:config:save', payload) as Promise<AiProviderConfig>
+  },
+  aiHomeworkSolve(payload: { question: HomeworkQuestion }) {
+    const plainPayload = JSON.parse(JSON.stringify(payload)) as { question: HomeworkQuestion }
+    return ipcRenderer.invoke('ai-homework:solve', plainPayload) as Promise<{ answer: string; model: string }>
   },
   notebookCourseGet(payload: { course: NotebookCourse }) {
     return ipcRenderer.invoke('notebook:course:get', payload) as Promise<{

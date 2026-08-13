@@ -5,6 +5,7 @@ import { access, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { autoUpdater } from 'electron-updater'
 import { DashboardDb } from './dashboard-db'
 import { MoodleService } from './services/moodle-service'
+import { AiHomeworkService, type AiApiMode, type HomeworkQuestion } from './services/ai-homework-service'
 import { StudentsService } from './services/students-service'
 import { TranscriptService } from './services/transcript-service'
 import { NotebookService, type NotebookCourse } from './notebook-service'
@@ -24,6 +25,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null = null
 let dashboardDb: DashboardDb | null = null
 let moodleService: MoodleService | null = null
+let aiHomeworkService: AiHomeworkService | null = null
 let studentsService: StudentsService | null = null
 let transcriptService: TranscriptService | null = null
 let notebookService: NotebookService | null = null
@@ -502,6 +504,24 @@ function registerIpcHandlers() {
   handle('app:preferences:update', (_event, payload?: Partial<AppPreferences>) => {
     if (!payload || typeof payload !== 'object') return getAppPreferences()
     return updateAppPreferences(payload)
+  })
+  handle('ai-homework:config:get', () => {
+    if (!aiHomeworkService) throw new Error('AI homework service is unavailable')
+    return aiHomeworkService.getConfig()
+  })
+  handle('ai-homework:config:save', (_event, payload: {
+    baseUrl: string
+    model: string
+    apiMode: AiApiMode
+    apiKey?: string
+    clearApiKey?: boolean
+  }) => {
+    if (!aiHomeworkService) throw new Error('AI homework service is unavailable')
+    return aiHomeworkService.saveConfig(payload)
+  })
+  handle('ai-homework:solve', (_event, payload: { question: HomeworkQuestion }) => {
+    if (!aiHomeworkService) throw new Error('AI homework service is unavailable')
+    return aiHomeworkService.solve(payload.question)
   })
 
   handle('notebook:course:get', (_event, payload: { course: NotebookCourse }) => {
@@ -1188,6 +1208,7 @@ app.whenReady().then(() => {
   const dbPath = path.join(app.getPath('userData'), 'dashboard.sqlite')
   dashboardDb = new DashboardDb(dbPath)
   moodleService = new MoodleService(dashboardDb)
+  aiHomeworkService = new AiHomeworkService()
   studentsService = new StudentsService(dashboardDb, () => win)
   transcriptService = new TranscriptService(dashboardDb)
   notebookService = new NotebookService(path.join(app.getPath('userData'), 'course-notes'))

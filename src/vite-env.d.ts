@@ -85,6 +85,36 @@ interface Window {
       autoSyncIntervalHours: 0 | 6 | 24
       downloadDirectory: string | null
     }>
+    aiHomeworkConfigGet: () => Promise<{
+      baseUrl: string
+      model: string
+      apiMode: 'responses' | 'chat-completions'
+      hasApiKey: boolean
+      secureStorageAvailable: boolean
+    }>
+    aiHomeworkConfigSave: (payload: {
+      baseUrl: string
+      model: string
+      apiMode: 'responses' | 'chat-completions'
+      apiKey?: string
+      clearApiKey?: boolean
+    }) => Promise<{
+      baseUrl: string
+      model: string
+      apiMode: 'responses' | 'chat-completions'
+      hasApiKey: boolean
+      secureStorageAvailable: boolean
+    }>
+    aiHomeworkSolve: (payload: { question: {
+      id: string
+      number: string
+      prompt: string
+      options: string[]
+      answerType: string
+      currentAnswer: string
+      formulas: string[]
+      images: Array<{ src: string; alt: string; dataUrl?: string }>
+    } }) => Promise<{ answer: string; model: string }>
     notebookCourseGet: (payload: { course: { courseKey: string; courseCode: string; courseName: string } }) => Promise<{
       index: {
         version: 1

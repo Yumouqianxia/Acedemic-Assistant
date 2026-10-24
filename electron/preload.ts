@@ -1,4 +1,5 @@
 import { ipcRenderer, contextBridge } from 'electron'
+import type { HomeworkQuestion, HomeworkSolveResult } from '../src/types/ai-homework'
 
 type MoodleUser = {
   username: string
@@ -85,16 +86,6 @@ type AiProviderConfig = {
   apiMode: AiApiMode
   hasApiKey: boolean
   secureStorageAvailable: boolean
-}
-type HomeworkQuestion = {
-  id: string
-  number: string
-  prompt: string
-  options: string[]
-  answerType: string
-  currentAnswer: string
-  formulas: string[]
-  images: Array<{ src: string; alt: string; dataUrl?: string }>
 }
 
 type ThemeMode = 'light' | 'dark' | 'system'
@@ -228,7 +219,7 @@ const electronAPI = {
   },
   aiHomeworkSolve(payload: { question: HomeworkQuestion }) {
     const plainPayload = JSON.parse(JSON.stringify(payload)) as { question: HomeworkQuestion }
-    return ipcRenderer.invoke('ai-homework:solve', plainPayload) as Promise<{ answer: string; model: string }>
+    return ipcRenderer.invoke('ai-homework:solve', plainPayload) as Promise<HomeworkSolveResult>
   },
   notebookCourseGet(payload: { course: NotebookCourse }) {
     return ipcRenderer.invoke('notebook:course:get', payload) as Promise<{

@@ -7,8 +7,11 @@ import texmath from 'markdown-it-texmath'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import 'katex/dist/katex.min.css'
 import 'markdown-it-texmath/css/texmath.css'
-import type { AiProviderConfig, HomeworkQuestion, HomeworkWebview } from '../types/ai-homework'
+import type { AiProviderConfig, HomeworkAnswerFill, HomeworkFillResult, HomeworkQuestion, HomeworkWebview } from '../types/ai-homework'
 import { getHomeworkExtractionScript } from '../utils/homework-extraction'
+import { getHomeworkAnswerFillScript } from '../utils/homework-answer-fields'
+import { WebworkAutoRunner, parseAutoRecords, type AutoAttemptRecord, type AutoRunState, type WebworkPage } from '../utils/webwork-auto-runner'
+import { getWebworkInspectScript, getWebworkNextScript, getWebworkSubmitScript } from '../utils/webwork-page-tools'
 
 const props = withDefaults(defineProps<{
   webview: HomeworkWebview | null
@@ -36,6 +39,62 @@ const aiDrawerScroll = ref<HTMLElement | null>(null)
 const aiAnswer = ref('')
 const aiAnswerModel = ref('')
 const aiError = ref('')
+const autoFillAnswers = ref(true)
+const replaceAnswers = ref(false)
+const aiFills = ref<HomeworkAnswerFill[]>([])
+const aiFilling = ref(false)
+const aiFillStatus = ref('')
+const autoSubmitEnabled = ref(false)
+const autoState = ref<AutoRunState>({ running: false, phase: 'idle', message: '', scope: '', account: '' })
+const autoPage = ref<WebworkPage | null>(null)
+const autoHistory = ref<AutoAttemptRecord[]>([])
+const AUTO_HISTORY_KEY = 'campus-dashboard:webwork-auto-attempts:v1'
+const recordLabels: Record<AutoAttemptRecord['status'], string> = {
+  pending: '等待确认 · 不重试', correct: '正确', incorrect: '需检查 · 不重试', unknown: '结果未知 · 不重试', skipped: '已跳过',
+}
+const visibleHistory = computed(() => autoHistory.value.filter(record =>
+  record.scope === (autoPage.value?.scope || autoState.value.scope)
+    && record.account === (autoPage.value?.account || autoState.value.account),
+).slice().reverse())
+const guestScript = <T,>(script: string): Promise<T> => {
+  if (!props.webview) return Promise.reject(new Error('作业页面已关闭。'))
+  return props.webview.executeJavaScript(script) as Promise<T>
+}
+const readAutoHistory = () => parseAutoRecords(window.localStorage.getItem(AUTO_HISTORY_KEY))
+const autoRunner = new WebworkAutoRunner({
+  inspect: async () => {
+    const page = await guestScript<WebworkPage | null>(getWebworkInspectScript())
+    if (page) autoPage.value = page
+    return page
+  },
+  extract: () => guestScript<HomeworkQuestion[]>(getHomeworkExtractionScript('webwork')),
+  solve: question => window.electronAPI.aiHomeworkSolve({ question: JSON.parse(JSON.stringify(question)) as HomeworkQuestion }),
+  fill: (question, fills) => guestScript<HomeworkFillResult>(getHomeworkAnswerFillScript(question, fills)),
+  submit: (page, question, fills) => guestScript<boolean>(getWebworkSubmitScript(page, question, fills)),
+  next: page => guestScript<boolean>(getWebworkNextScript(page)),
+  records: readAutoHistory,
+  save: records => { window.localStorage.setItem(AUTO_HISTORY_KEY, JSON.stringify(records)); autoHistory.value = records },
+  update: state => { autoState.value = state },
+  result: (question, result) => {
+    aiQuestions.value = [question]
+    aiSelectedQuestionId.value = question.id
+    aiAnswer.value = result.answer
+    aiAnswerModel.value = result.model
+    aiFills.value = result.fills
+  },
+})
+
+const startAutoRun = async () => {
+  if (!autoSubmitEnabled.value || props.source !== 'webwork' || autoState.value.running) return
+  if (!aiConfig.value.hasApiKey) { aiSettingsOpen.value = true; aiError.value = '请先保存 API Key。'; return }
+  await autoRunner.start()
+  if (props.webview && !aiQuestions.value.length) await readQuestions()
+}
+const closeAssistant = () => {
+  autoRunner.stop('已关闭助手，连续解题已停止。')
+  aiDrawerOpen.value = false
+}
+watch(autoSubmitEnabled, enabled => { if (!enabled) autoRunner.stop() })
 const aiConfig = ref<AiProviderConfig>({
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-5.4-mini',
@@ -83,7 +142,7 @@ const loadAiConfig = async () => {
 
 const readQuestions = async () => {
   const webview = props.webview
-  if (!webview || aiReading.value || aiSolving.value) return
+  if (!webview || aiReading.value || aiSolving.value || aiFilling.value || autoState.value.running) return
   const version = pageVersion
   aiReading.value = true
   resetAiAnswer()
@@ -95,6 +154,10 @@ const readQuestions = async () => {
       aiSelectedQuestionId.value = aiQuestions.value[0]?.id ?? ''
     }
     if (!aiQuestions.value.length) aiError.value = '当前页面没有读取到题目，请先进入某一道题或作答页面。'
+    if (props.source === 'webwork') {
+      autoPage.value = await guestScript<WebworkPage | null>(getWebworkInspectScript())
+      autoHistory.value = readAutoHistory()
+    }
   } catch (error) {
     if (version !== pageVersion) return
     aiError.value = `读取题目失败：${error instanceof Error ? error.message : String(error)}`
@@ -131,7 +194,7 @@ const saveAiConfig = async () => {
 
 const solveSelectedQuestion = async () => {
   const question = aiSelectedQuestion.value
-  if (!question || aiSolving.value) return
+  if (!question || aiSolving.value || autoState.value.running) return
   if (!aiConfig.value.hasApiKey) {
     aiSettingsOpen.value = true
     aiError.value = '请先保存 API Key。'
@@ -141,6 +204,8 @@ const solveSelectedQuestion = async () => {
   aiSolving.value = true
   aiError.value = ''
   aiAnswer.value = ''
+  aiFills.value = []
+  aiFillStatus.value = ''
   try {
     // Electron IPC cannot structured-clone Vue's reactive Proxy objects.
     const plainQuestion = JSON.parse(JSON.stringify(question)) as HomeworkQuestion
@@ -148,11 +213,38 @@ const solveSelectedQuestion = async () => {
     if (version !== pageVersion) return
     aiAnswer.value = result.answer
     aiAnswerModel.value = result.model
+    aiFills.value = Array.isArray(result.fills) ? result.fills : []
+    if (autoFillAnswers.value) await fillAnswers()
   } catch (error) {
     if (version !== pageVersion) return
     aiError.value = error instanceof Error ? error.message : String(error)
   } finally {
     if (version === pageVersion) aiSolving.value = false
+  }
+}
+
+const fillAnswers = async (overwrite = false) => {
+  const question = aiSelectedQuestion.value
+  const webview = props.webview
+  if (!question || !webview || aiFilling.value || autoState.value.running) return
+  if (!aiFills.value.length) {
+    aiFillStatus.value = '本次解答没有可可靠匹配的答案，请参照解答手动填写。'
+    return
+  }
+  const version = pageVersion
+  aiFilling.value = true
+  aiFillStatus.value = ''
+  try {
+    const result = await webview.executeJavaScript(
+      getHomeworkAnswerFillScript(question, aiFills.value, overwrite),
+    ) as HomeworkFillResult
+    if (version !== pageVersion) return
+    aiFillStatus.value = result.message
+  } catch (error) {
+    if (version !== pageVersion) return
+    aiFillStatus.value = `填入失败：${error instanceof Error ? error.message : String(error)}。请检查题目页面。`
+  } finally {
+    if (version === pageVersion) aiFilling.value = false
   }
 }
 
@@ -166,10 +258,14 @@ const resetAiAnswer = () => {
   aiAnswer.value = ''
   aiAnswerModel.value = ''
   aiError.value = ''
+  aiFills.value = []
+  aiFilling.value = false
+  aiFillStatus.value = ''
+  replaceAnswers.value = false
 }
 
 const changeAiQuestion = async (offset: -1 | 1) => {
-  if (aiSolving.value) return
+  if (aiSolving.value || aiFilling.value || autoState.value.running) return
   const target = aiQuestions.value[aiSelectedQuestionIndex.value + offset]
   if (!target) return
   aiSelectedQuestionId.value = target.id
@@ -190,17 +286,28 @@ const invalidatePage = () => {
 }
 watch(aiDrawerOpen, (open) => emit('openChange', open))
 watch(() => props.webview, (webview, _previous, onCleanup) => {
+  if (autoState.value.running) autoRunner.stop('作业浏览器已变化，连续解题已停止。')
   invalidatePage()
   if (!webview) return
-  const onReady = () => { if (aiDrawerOpen.value) void readQuestions() }
-  webview.addEventListener('did-start-loading', invalidatePage)
+  const onNavigation = (event: Event & { isMainFrame?: boolean; isInPlace?: boolean }) => {
+    if (event.isMainFrame === true && !event.isInPlace) {
+      if (autoState.value.running && !['submitting', 'grading', 'navigating'].includes(autoState.value.phase)) {
+        autoRunner.stop('题目页面已切换，连续解题已暂停。')
+      }
+      invalidatePage()
+    }
+  }
+  const onReady = () => { if (aiDrawerOpen.value && !aiQuestions.value.length && !autoState.value.running) void readQuestions() }
+  webview.addEventListener('did-start-navigation', onNavigation)
   webview.addEventListener('dom-ready', onReady)
+  webview.addEventListener('did-finish-load', onReady)
   onCleanup(() => {
-    webview.removeEventListener('did-start-loading', invalidatePage)
+    webview.removeEventListener('did-start-navigation', onNavigation)
     webview.removeEventListener('dom-ready', onReady)
+    webview.removeEventListener('did-finish-load', onReady)
   })
 }, { immediate: true })
-onBeforeUnmount(() => { pageVersion += 1 })
+onBeforeUnmount(() => { pageVersion += 1; autoRunner.stop('作业页面已关闭。') })
 </script>
 
 <template>
@@ -228,7 +335,7 @@ onBeforeUnmount(() => { pageVersion += 1 })
         <button aria-label="AI 设置" title="AI 设置" @click="aiSettingsOpen = !aiSettingsOpen">
           <el-icon><Setting /></el-icon>
         </button>
-        <button aria-label="关闭 AI 助手" title="关闭" @click="aiDrawerOpen = false">
+        <button aria-label="关闭 AI 助手" title="关闭" @click="closeAssistant">
           <el-icon><Close /></el-icon>
         </button>
       </div>
@@ -276,7 +383,7 @@ onBeforeUnmount(() => { pageVersion += 1 })
       <section class="ai-question-card">
         <div class="ai-section-heading">
           <strong>读取到的题目</strong>
-          <button class="ai-text-button" :disabled="aiReading || aiSolving" @click="readQuestions">
+          <button class="ai-text-button" :disabled="aiReading || aiSolving || aiFilling || autoState.running" @click="readQuestions">
             <el-icon :class="{ 'is-loading': aiReading }"><Refresh /></el-icon>
             {{ aiReading ? '读取中…' : '重新读取' }}
           </button>
@@ -288,7 +395,7 @@ onBeforeUnmount(() => { pageVersion += 1 })
         <template v-else-if="aiQuestions.length">
           <label class="ai-field">
             <span>选择题目</span>
-            <select v-model="aiSelectedQuestionId" :disabled="aiSolving" @change="resetAiAnswer">
+            <select v-model="aiSelectedQuestionId" :disabled="aiSolving || aiFilling || autoState.running" @change="resetAiAnswer">
               <option v-for="question in aiQuestions" :key="question.id" :value="question.id">
                 {{ question.number }} · {{ question.prompt.slice(0, 52) }}
               </option>
@@ -314,11 +421,35 @@ onBeforeUnmount(() => { pageVersion += 1 })
               部分图片未能读取，解答可能缺少图示信息。请重新读取题目。
             </p>
           </div>
-          <button class="ai-primary-button" :disabled="aiSolving || !aiSelectedQuestion" @click="solveSelectedQuestion">
+          <label class="ai-fill-option">
+            <input v-model="autoFillAnswers" type="checkbox">
+            解答后自动填入空白答案（含下拉选项）
+          </label>
+          <button class="ai-primary-button" :disabled="aiSolving || aiFilling || autoState.running || !aiSelectedQuestion" @click="solveSelectedQuestion">
             <el-icon :class="{ 'is-loading': aiSolving }"><Refresh v-if="aiSolving" /><MagicStick v-else /></el-icon>
             {{ aiSolving ? '正在分析…' : aiAnswer ? '重新生成解答' : '一键解题' }}
           </button>
         </template>
+      </section>
+
+      <section v-if="source === 'webwork'" class="ai-auto-card">
+        <strong>连续解题</strong>
+        <label class="ai-fill-option">
+          <input v-model="autoSubmitEnabled" type="checkbox">
+          自动解答、提交并进入下一题
+        </label>
+        <p>从当前题开始处理未提交的题目。答错会标记并跳过，不自动二次提交；评分不明时暂停。</p>
+        <button v-if="!autoState.running" class="ai-primary-button"
+          :disabled="!autoSubmitEnabled || aiReading || aiSolving || aiFilling" @click="startAutoRun">开始连续解题</button>
+        <button v-else class="ai-primary-button" @click="autoRunner.stop()">停止连续解题</button>
+        <p v-if="autoState.message" role="status">{{ autoState.message }}</p>
+        <ul v-if="visibleHistory.length" class="ai-auto-history" aria-label="自动提交记录">
+          <li v-for="record in visibleHistory" :key="record.key" :class="`is-${record.status}`">
+            <strong>{{ record.label }}</strong>
+            <span>{{ recordLabels[record.status] }}{{ record.score !== null ? ` · ${record.score}%` : '' }}</span>
+            <small>{{ record.message }}</small>
+          </li>
+        </ul>
       </section>
 
       <div v-if="aiError" class="ai-error" role="alert">{{ aiError }}</div>
@@ -340,17 +471,33 @@ onBeforeUnmount(() => { pageVersion += 1 })
           </button>
         </div>
         <div class="ai-markdown" v-html="aiRenderedAnswer" />
+        <div v-if="aiFills.length" class="ai-fill-controls">
+          <strong>待填答案</strong>
+          <ul>
+            <li v-for="(fill, index) in aiFills" :key="fill.field">
+              答案 {{ index + 1 }}：<code>{{ fill.values.join(', ') || '不勾选' }}</code>
+            </li>
+          </ul>
+          <label class="ai-fill-option">
+            <input v-model="replaceAnswers" type="checkbox" :disabled="aiFilling || autoState.running">
+            替换读取题目时已有的答案
+          </label>
+          <button class="ai-primary-button" :disabled="aiFilling || aiReading || autoState.running" @click="fillAnswers(replaceAnswers)">
+            {{ aiFilling ? '正在填入…' : '填入答案' }}
+          </button>
+        </div>
+        <p v-if="aiFillStatus" class="ai-fill-status" role="status">{{ aiFillStatus }}</p>
       </section>
 
       <p class="ai-disclaimer">
         <el-icon><ChatDotRound /></el-icon>
-        内容由 AI 生成，请自行核对。助手不会填写或提交答案。
+        内容由 AI 生成，请自行核对。{{ source === 'webwork' ? '连续解题开启后会自动提交；其他情况下由你手动提交。' : '可自动填入答案，提交仍由你手动完成。' }}
       </p>
     </div>
 
     <footer v-if="aiQuestions.length" class="ai-question-nav" aria-label="题目导航">
       <button
-        :disabled="!aiHasPreviousQuestion || aiSolving"
+        :disabled="!aiHasPreviousQuestion || aiSolving || aiFilling || autoState.running"
         aria-label="切换到上一题"
         @click="changeAiQuestion(-1)"
       >
@@ -362,7 +509,7 @@ onBeforeUnmount(() => { pageVersion += 1 })
       </span>
       <button
         class="is-next"
-        :disabled="!aiHasNextQuestion || aiSolving"
+        :disabled="!aiHasNextQuestion || aiSolving || aiFilling || autoState.running"
         aria-label="切换到下一题"
         @click="changeAiQuestion(1)"
       >
@@ -374,6 +521,19 @@ onBeforeUnmount(() => { pageVersion += 1 })
 </template>
 
 <style scoped>
+.ai-auto-card { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border-soft); border-radius: 12px; padding: 16px; }
+.ai-auto-card p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-m); }
+.ai-auto-history { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.ai-auto-history li { display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; font-size: 12px; }
+.ai-auto-history small { color: var(--text-m); }
+.ai-auto-history .is-incorrect, .ai-auto-history .is-unknown { color: var(--el-color-danger); }
+
+.ai-fill-option { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.ai-fill-option input { flex: 0 0 auto; }
+.ai-fill-controls { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.ai-fill-controls ul { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.ai-fill-status { font-size: 12px; line-height: 1.6; color: var(--text-m); }
+
 .ai-fab {
   position: absolute;
   right: 24px;

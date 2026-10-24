@@ -105,16 +105,7 @@ interface Window {
       hasApiKey: boolean
       secureStorageAvailable: boolean
     }>
-    aiHomeworkSolve: (payload: { question: {
-      id: string
-      number: string
-      prompt: string
-      options: string[]
-      answerType: string
-      currentAnswer: string
-      formulas: string[]
-      images: Array<{ src: string; alt: string; dataUrl?: string }>
-    } }) => Promise<{ answer: string; model: string }>
+    aiHomeworkSolve: (payload: { question: import('./types/ai-homework').HomeworkQuestion }) => Promise<import('./types/ai-homework').HomeworkSolveResult>
     notebookCourseGet: (payload: { course: { courseKey: string; courseCode: string; courseName: string } }) => Promise<{
       index: {
         version: 1

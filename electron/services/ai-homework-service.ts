@@ -1,6 +1,8 @@
 import { safeStorage } from 'electron'
 import axios from 'axios'
 import Store from 'electron-store'
+import type { HomeworkQuestion, HomeworkSolveResult } from '../../src/types/ai-homework'
+import { parseAnswerFills } from './ai-answer-format'
 
 export type AiApiMode = 'responses' | 'chat-completions'
 
@@ -12,16 +14,7 @@ export type AiProviderConfig = {
   secureStorageAvailable: boolean
 }
 
-export type HomeworkQuestion = {
-  id: string
-  number: string
-  prompt: string
-  options: string[]
-  answerType: string
-  currentAnswer: string
-  formulas: string[]
-  images: Array<{ src: string; alt: string; dataUrl?: string }>
-}
+export type { HomeworkQuestion } from '../../src/types/ai-homework'
 
 type StoredAiConfig = {
   baseUrl: string
@@ -50,7 +43,14 @@ Explain the method and the important intermediate steps.
 Give the final answer clearly, including the option letter or value and units where applicable.
 ## 检查
 Briefly verify the result and mention uncertainty if the extracted question is incomplete.
-Never claim that you submitted or changed the student's Moodle answer.`
+After the three Markdown sections, append exactly one fenced code block tagged answer-fields.
+Its JSON must be {"answers":[{"field":"exact input name","values":["answer value"],"latex":"optional LaTeX for math editors"}]}.
+Use only names supplied in answerFields. Match every blank separately; never guess the mapping.
+For text inputs, give platform-ready syntax (e.g. sqrt(2), x^2, (-infinity,-4) U (5,infinity)), without Markdown, units or explanations unless the input requires them.
+For radio, checkbox and select, use the exact option values, not letters or labels. A checkbox group may have multiple values or [].
+For mathInput fields also provide equivalent LaTeX in latex, e.g. "\\frac{1}{2}" or "(-\\infty,-4)\\cup(5,\\infty)".
+If a value, field mapping, or problem statement is uncertain, omit that field. Return {"answers":[]} when none can be filled reliably.
+Never claim that answers have been submitted. The app handles filling separately.`
 
 const normalizeBaseUrl = (value: string) => {
   const trimmed = value.trim().replace(/\/+$/, '')
@@ -117,7 +117,7 @@ export class AiHomeworkService {
     }
   }
 
-  async solve(question: HomeworkQuestion) {
+  async solve(question: HomeworkQuestion): Promise<HomeworkSolveResult> {
     const config = this.store.get('provider', DEFAULT_CONFIG)
     const apiKey = this.getApiKey(config)
     const baseUrl = normalizeBaseUrl(config.baseUrl)
@@ -125,6 +125,7 @@ export class AiHomeworkService {
       questionNumber: question.number,
       prompt: question.prompt,
       answerType: question.answerType,
+      answerFields: question.answerFields ?? [],
       options: question.options,
       currentAnswer: question.currentAnswer,
       formulas: question.formulas,
@@ -136,7 +137,7 @@ export class AiHomeworkService {
     try {
       if (config.apiMode === 'chat-completions') {
         const content: Array<Record<string, unknown>> = [
-          { type: 'text', text: `请解答以下从 Moodle 作业页面读取的题目：\n\n${questionText}` },
+          { type: 'text', text: `请解答以下从作业页面读取的题目：\n\n${questionText}` },
           ...images.map(url => ({ type: 'image_url', image_url: { url } })),
         ]
         const { data } = await axios.post(`${baseUrl}/chat/completions`, {
@@ -148,11 +149,11 @@ export class AiHomeworkService {
         }, { headers, timeout: 120_000 })
         const answer = data?.choices?.[0]?.message?.content
         if (!answer) throw new Error('The model returned an empty response')
-        return { answer: String(answer), model: config.model }
+        return { ...parseAnswerFills(String(answer), question), model: config.model }
       }
 
       const content: Array<Record<string, unknown>> = [
-        { type: 'input_text', text: `请解答以下从 Moodle 作业页面读取的题目：\n\n${questionText}` },
+        { type: 'input_text', text: `请解答以下从作业页面读取的题目：\n\n${questionText}` },
         ...images.map(imageUrl => ({ type: 'input_image', image_url: imageUrl })),
       ]
       const { data } = await axios.post(`${baseUrl}/responses`, {
@@ -161,9 +162,9 @@ export class AiHomeworkService {
         input: [{ role: 'user', content }],
       }, { headers, timeout: 120_000 })
       const answer = data?.output_text
-        || data?.output?.flatMap((item: any) => item?.content ?? []).find((item: any) => item?.type === 'output_text')?.text
+        || data?.output?.flatMap((item: { content?: Array<{ type?: string; text?: string }> }) => item?.content ?? []).filter((item: { type?: string }) => item?.type === 'output_text').map((item: { text?: string }) => item.text ?? '').join('\n')
       if (!answer) throw new Error('The model returned an empty response')
-      return { answer: String(answer), model: config.model }
+      return { ...parseAnswerFills(String(answer), question), model: config.model }
     } catch (error) {
       throw new Error(`AI request failed: ${getErrorMessage(error)}`)
     }

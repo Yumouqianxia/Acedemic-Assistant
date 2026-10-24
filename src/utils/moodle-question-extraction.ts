@@ -1,4 +1,7 @@
+import { createHomeworkAnswerTools } from './homework-answer-fields'
+
 export const getMoodleQuestionExtractionScript = () => `(() => {
+  const answerTools = (${createHomeworkAnswerTools.toString()})();
   const clean = value => String(value || '').replace(/\\s+/g, ' ').trim();
   const nodes = Array.from(document.querySelectorAll('.que'));
   const imageToDataUrl = async img => {
@@ -59,6 +62,8 @@ export const getMoodleQuestionExtractionScript = () => `(() => {
       currentAnswer: checked.map(input => clean(input.closest('label')?.textContent || input.value)).filter(Boolean).join('; '),
       formulas,
       images: images.filter(image => image.src),
+      answerFields: answerTools.describe(node),
+      fillContext: answerTools.context(node),
     };
   }));
 })()`

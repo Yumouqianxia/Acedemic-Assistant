@@ -1,9 +1,10 @@
 import type { HomeworkQuestion } from '../types/ai-homework'
 import { getMoodleQuestionExtractionScript } from './moodle-question-extraction'
+import { createHomeworkAnswerTools } from './homework-answer-fields'
 
 // This function runs inside the isolated guest page. Keep all runtime helpers
 // inside it so serializing the function does not depend on the app's context.
-async function extractWebworkQuestions(): Promise<HomeworkQuestion[]> {
+async function extractWebworkQuestions(answerTools: ReturnType<typeof createHomeworkAnswerTools>): Promise<HomeworkQuestion[]> {
   const clean = (value: string | null | undefined) => (value || '').replace(/\s+/g, ' ').trim()
   type MathItem = { math: string; typesetRoot?: Element }
   const mathJax = (window as Window & {
@@ -43,7 +44,8 @@ async function extractWebworkQuestions(): Promise<HomeworkQuestion[]> {
       if (node.matches('script[type^="math/tex"]')) return asFormula(node.textContent || '')
       if (node.matches('script') || node.matches(ignored)) return ''
       const latex = node.getAttribute('data-latex')
-        || node.querySelector('annotation[encoding="application/x-tex"]')?.textContent
+        || (node.matches('math, semantics, mjx-container, .katex, .katex-mathml')
+          ? node.querySelector('annotation[encoding="application/x-tex"]')?.textContent : '')
         || (node.matches('mjx-container') ? node.getAttribute('aria-label') : '')
       if (latex) return asFormula(latex)
       if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement) {
@@ -111,6 +113,8 @@ async function extractWebworkQuestions(): Promise<HomeworkQuestion[]> {
       currentAnswer,
       formulas,
       images,
+      answerFields: answerTools.describe(root),
+      fillContext: answerTools.context(root),
     }
   }))
 }
@@ -118,5 +122,5 @@ async function extractWebworkQuestions(): Promise<HomeworkQuestion[]> {
 export function getHomeworkExtractionScript(source: 'moodle' | 'webwork') {
   return source === 'moodle'
     ? getMoodleQuestionExtractionScript()
-    : `(${extractWebworkQuestions.toString()})()`
+    : `(${extractWebworkQuestions.toString()})((${createHomeworkAnswerTools.toString()})())`
 }

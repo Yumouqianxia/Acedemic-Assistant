@@ -1,11 +1,14 @@
 {
   "name": "acedemic-assistant",
   "private": true,
-  "version": "1.0.15",
+  "version": "1.0.16",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "test:academic-terms": "node --test scripts/test-academic-terms.mjs",
+    "test:lti-loading": "node --test scripts/test-lti-loading.mjs",
+    "test:answer-format": "node --test scripts/test-answer-format.mjs",
+    "test:webwork-auto": "node --test scripts/test-webwork-auto.mjs",
     "clean": "node scripts/clean.mjs",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "build": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder",

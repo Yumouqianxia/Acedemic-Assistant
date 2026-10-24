@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AiHomeworkAssistant: typeof import('./components/AiHomeworkAssistant.vue')['default']
     AppSidebar: typeof import('./components/AppSidebar.vue')['default']
     AppTitleBar: typeof import('./components/AppTitleBar.vue')['default']
     ElAutocomplete: typeof import('element-plus/es')['ElAutocomplete']
@@ -27,6 +28,7 @@ declare module 'vue' {
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     HelloWorld: typeof import('./components/HelloWorld.vue')['default']
+    MoodleLtiBrowser: typeof import('./components/MoodleLtiBrowser.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StudyCsvImportDialog: typeof import('./components/study/StudyCsvImportDialog.vue')['default']

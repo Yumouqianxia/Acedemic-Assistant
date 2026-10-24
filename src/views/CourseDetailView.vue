@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import MoodleLtiBrowser from '../components/MoodleLtiBrowser.vue'
 import {
   Back,
   Calendar,
@@ -90,6 +91,7 @@ const emit = defineEmits<{
 const collapsedSections = ref(new Set<number>())
 const downloadingResources = ref(false)
 const selectedResourceKeys = ref(new Set<string>())
+const activeLti = ref<{ cmid: number; title: string } | null>(null)
 
 type DownloadableResource = {
   key: string
@@ -191,6 +193,7 @@ const downloadableResources = computed(() =>
 
 watch(() => props.course.courseKey, () => {
   selectedResourceKeys.value = new Set()
+  activeLti.value = null
 })
 
 watch(downloadableResources, (resources) => {
@@ -303,7 +306,7 @@ const downloadSectionResources = (section: MoodleSection) => {
 <template>
   <div class="cd-page">
     <!-- Top nav bar -->
-    <div class="cd-topbar">
+    <div v-show="!activeLti" class="cd-topbar">
       <button class="cd-back-btn" @click="emit('back')">
         <el-icon><Back /></el-icon>
         Back
@@ -315,7 +318,15 @@ const downloadSectionResources = (section: MoodleSection) => {
       </span>
     </div>
 
-    <div class="cd-body">
+    <MoodleLtiBrowser
+      v-if="activeLti"
+      :cmid="activeLti.cmid"
+      :title="activeLti.title"
+      :course-name="course.courseName"
+      @close="activeLti = null"
+    />
+
+    <div v-show="!activeLti" class="cd-body">
       <!-- Course header card -->
       <div class="cd-header-card">
         <div class="cd-course-icon">
@@ -450,8 +461,29 @@ const downloadSectionResources = (section: MoodleSection) => {
         <div v-if="!isSectionCollapsed(section.id)" class="cd-cards-grid">
           <template v-for="mod in section.modules" :key="mod.id">
 
+            <!-- LTI tools must launch through Moodle to establish their own session. -->
+            <div v-if="mod.modname === 'lti'" class="cd-file-card cd-file-card--other">
+              <div class="cd-file-ext-badge" :style="{ background: '#5479c7' }">
+                <el-icon :size="18"><Link /></el-icon>
+              </div>
+              <div class="cd-file-body">
+                <div class="cd-file-name" :title="mod.name">{{ mod.name }}</div>
+                <div class="cd-file-sub">
+                  <span class="cd-file-type-tag">LTI</span>
+                  <span>应用内打开</span>
+                </div>
+              </div>
+              <button
+                class="cd-action-btn cd-action-btn--primary"
+                @click="activeLti = { cmid: mod.id, title: mod.name }"
+              >
+                <el-icon><Link /></el-icon>
+                打开作业
+              </button>
+            </div>
+
             <!-- Resource: one card per file -->
-            <template v-if="mod.resources.length">
+            <template v-else-if="mod.resources.length">
               <div
                 v-for="res in mod.resources"
                 :key="`${mod.id}-${res.fileurl}`"

@@ -2,7 +2,7 @@
 defineProps<{
   gpaDisplay: string | null
   completedCreditsNum: number | null
-  currentSemesterInfo: { label: string; credits: number } | null
+  currentSemesterInfo: { label: string; credits: number | null } | null
 }>()
 </script>
 

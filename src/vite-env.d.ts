@@ -457,6 +457,7 @@ interface Window {
     }>
     moodleQuizOpen: (payload: { cmid: number; attemptId?: number }) => Promise<boolean>
     moodleQuizLaunchUrl: (payload: { cmid: number; attemptId?: number }) => Promise<string>
+    moodleLtiLaunchUrl: (payload: { cmid: number }) => Promise<string>
     openPdfViewer: (payload: { url: string; title?: string }) => Promise<boolean>
     downloadAndOpenFile: (payload: { url: string; filename?: string }) => Promise<{ filePath: string }>
     downloadCourseResources: (payload: {

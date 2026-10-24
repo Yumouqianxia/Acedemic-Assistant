@@ -523,6 +523,9 @@ const electronAPI = {
   moodleQuizLaunchUrl(payload: { cmid: number; attemptId?: number }) {
     return ipcRenderer.invoke('moodle:quiz:launch-url', payload) as Promise<string>
   },
+  moodleLtiLaunchUrl(payload: { cmid: number }) {
+    return ipcRenderer.invoke('moodle:lti:launch-url', payload) as Promise<string>
+  },
   openPdfViewer(payload: { url: string; title?: string }) {
     return ipcRenderer.invoke('file:open-pdf', payload) as Promise<boolean>
   },

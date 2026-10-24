@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, shell, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { access, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
@@ -92,7 +92,9 @@ function getAppIconPath() {
   if (process.platform === 'linux') {
     return path.join(process.env.APP_ROOT, 'build', 'icons', '512x512.png')
   }
-  return path.join(process.env.VITE_PUBLIC, 'electron-vite.svg')
+  return app.isPackaged
+    ? path.join(process.env.APP_ROOT, 'build', 'icons', '512x512.png')
+    : path.join(process.env.APP_ROOT, 'assets', 'icon-source.png')
 }
 
 function sanitizeFilename(name: string) {
@@ -460,7 +462,8 @@ function showMainWindow() {
 
 function createTray() {
   if (tray) return
-  tray = new Tray(getAppIconPath())
+  const icon = nativeImage.createFromPath(getAppIconPath())
+  tray = new Tray(process.platform === 'darwin' ? icon.resize({ width: 18, height: 18 }) : icon)
   tray.setToolTip('GTIIT Campus Dashboard')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Campus Dashboard', click: showMainWindow },
@@ -876,6 +879,9 @@ function registerIpcHandlers() {
   })
   handle('moodle:quiz:launch-url', (_event, payload: { cmid: number; attemptId?: number }) => {
     return ensureServices().moodleService.getQuizLaunchUrl(payload)
+  })
+  handle('moodle:lti:launch-url', (_event, payload: { cmid: number }) => {
+    return ensureServices().moodleService.getLtiLaunchUrl(payload)
   })
 
   // ── PDF / file viewer ─────────────────────────────────────────────────────

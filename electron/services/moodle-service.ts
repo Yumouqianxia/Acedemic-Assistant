@@ -1091,6 +1091,18 @@ export class MoodleService {
     const targetUrl = payload.attemptId
       ? `${MOODLE_BASE}/mod/quiz/review.php?attempt=${payload.attemptId}`
       : `${MOODLE_BASE}/mod/quiz/view.php?id=${payload.cmid}`
+    return this.getAuthenticatedBrowserUrl(targetUrl)
+  }
+
+  async getLtiLaunchUrl(payload: { cmid: number }): Promise<string> {
+    const cmid = Number(payload?.cmid)
+    if (!Number.isSafeInteger(cmid) || cmid <= 0) throw new Error('无效的外部工具 ID')
+    // Launch through Moodle so it signs the LTI POST. Opening the tool's URL
+    // directly cannot reuse a Moodle token or establish the WeBWorK session.
+    return this.getAuthenticatedBrowserUrl(`${MOODLE_BASE}/mod/lti/launch.php?id=${cmid}`)
+  }
+
+  private async getAuthenticatedBrowserUrl(targetUrl: string): Promise<string> {
     let loadUrl = targetUrl
     try {
       const sess = this.ensureSession()
@@ -1106,7 +1118,7 @@ export class MoodleService {
     } catch (error) {
       // Some sites disable mobile auto-login. The shared SSO browser session is
       // still useful and will either already be authenticated or show Moodle login.
-      console.warn('[moodle] quiz browser auto-login unavailable', error)
+      console.warn('[moodle] browser auto-login unavailable:', error instanceof Error ? error.message : 'Unknown error')
     }
     return loadUrl
   }

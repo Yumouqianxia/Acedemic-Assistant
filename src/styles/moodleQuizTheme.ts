@@ -31,6 +31,51 @@ export const getMoodleQuizTheme = (dark: boolean): string => {
       padding: 0 !important;
     }
 
+    /* Boost changes its scroll owner at mobile breakpoints and can leave
+       body.drawer-open-* locked after we hide its drawers. Always let the
+       document own scrolling, independent of width and drawer classes. */
+    html {
+      height: 100% !important;
+      overflow-x: auto !important;
+      overflow-y: scroll !important;
+      scrollbar-gutter: stable;
+    }
+
+    body,
+    body.drawer-open-left,
+    body.drawer-open-right {
+      height: auto !important;
+      min-height: 100% !important;
+      min-width: 0 !important;
+      overflow: visible !important;
+    }
+
+    #page-wrapper,
+    #page,
+    #page.drawers,
+    #page-content,
+    #region-main-box,
+    #region-main,
+    .main-inner {
+      height: auto !important;
+      min-height: 0 !important;
+      min-width: 0 !important;
+      max-height: none !important;
+      overflow: visible !important;
+    }
+
+    /* Native macOS overlay scrollbars may otherwise disappear when idle. */
+    html::-webkit-scrollbar,
+    .que .content::-webkit-scrollbar { width: 12px; height: 12px; }
+    html::-webkit-scrollbar-track,
+    .que .content::-webkit-scrollbar-track { background: var(--campus-page); }
+    html::-webkit-scrollbar-thumb,
+    .que .content::-webkit-scrollbar-thumb {
+      background: var(--campus-muted);
+      border: 3px solid var(--campus-page);
+      border-radius: 8px;
+    }
+
     body.drawer-open-left,
     body.drawer-open-right { margin: 0 !important; }
 
@@ -132,6 +177,10 @@ export const getMoodleQuizTheme = (dark: boolean): string => {
       margin: 0 !important;
       padding: 20px 22px 24px !important;
       min-width: 0 !important;
+      /* Long equations/tables scroll inside the padded question content;
+         their intrinsic width must not push the document scrollbar offscreen. */
+      max-width: 100% !important;
+      overflow-x: auto !important;
     }
 
     .que .formulation,

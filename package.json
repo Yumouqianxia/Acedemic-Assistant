@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test:academic-terms": "node --test scripts/test-academic-terms.mjs",
     "clean": "node scripts/clean.mjs",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "build": "pnpm clean && pnpm rebuild:native && vue-tsc && vite build && electron-builder",

@@ -3,6 +3,7 @@ import { computed, ref, watchEffect } from 'vue'
 import type { UnifiedCourse } from '../types'
 import { useDashboard } from '../composables/useDashboard'
 import CourseGrid from './dashboard/CourseGrid.vue'
+import { resolveCourseTerm } from '../utils/academic-terms'
 
 const emit = defineEmits<{
   'select-course': [course: UnifiedCourse]
@@ -10,106 +11,6 @@ const emit = defineEmits<{
 
 const { dashboard } = useDashboard()
 const selectedSemester = ref('all')
-
-type AcademicTerm = 'Fall' | 'Winter' | 'Spring' | 'Summer'
-
-type TermMeta = {
-  key: string
-  label: string
-  sortScore: number
-}
-
-const termOrder: Record<AcademicTerm, number> = {
-  Fall: 1,
-  Winter: 2,
-  Spring: 3,
-  Summer: 4,
-}
-
-const enTermName: Record<string, AcademicTerm> = {
-  fall: 'Fall',
-  autumn: 'Fall',
-  winter: 'Winter',
-  spring: 'Spring',
-  sping: 'Spring',
-  summer: 'Summer',
-}
-
-const toFullYear = (yearText: string) => {
-  if (yearText.length === 4) return Number.parseInt(yearText, 10)
-  const yy = Number.parseInt(yearText, 10)
-  return yy >= 70 ? 1900 + yy : 2000 + yy
-}
-
-const toAcademicYearStart = (term: AcademicTerm, calendarYear: number) => {
-  if (term === 'Fall') return calendarYear
-  return calendarYear - 1
-}
-
-const makeTermMeta = (academicStartYear: number, term: AcademicTerm): TermMeta => {
-  const startShort = String(academicStartYear).slice(-2)
-  const endShort = String(academicStartYear + 1).slice(-2)
-  return {
-    key: `${academicStartYear}-${term}`,
-    label: `${startShort}-${endShort} ${term}`,
-    sortScore: academicStartYear * 10 + termOrder[term],
-  }
-}
-
-const parseTermText = (text: string): TermMeta | null => {
-  const raw = text.trim()
-  if (!raw) return null
-
-  const academicYearHit = raw.match(/(20\d{2})\s*[-/]\s*(?:20)?(\d{2})\s*[-/ ]*\s*(spring|sping|summer|fall|autumn|winter)\b/i)
-  if (academicYearHit) {
-    const term = enTermName[academicYearHit[3].toLowerCase()]
-    return makeTermMeta(Number.parseInt(academicYearHit[1], 10), term)
-  }
-
-  const termFirst = raw.match(/\b(spring|sping|summer|fall|autumn|winter)\s*[-/ ]*\s*(\d{2,4})\b/i)
-  if (termFirst) {
-    const term = enTermName[termFirst[1].toLowerCase()]
-    const calendarYear = toFullYear(termFirst[2])
-    return makeTermMeta(toAcademicYearStart(term, calendarYear), term)
-  }
-
-  const yearFirst = raw.match(/\b(\d{2,4})\s*[-/ ]*\s*(spring|sping|summer|fall|autumn|winter)\b/i)
-  if (yearFirst) {
-    const calendarYear = toFullYear(yearFirst[1])
-    const term = enTermName[yearFirst[2].toLowerCase()]
-    return makeTermMeta(toAcademicYearStart(term, calendarYear), term)
-  }
-
-  // Students semesterTechnion fallback, e.g. "2025-2026-2" / "202520262".
-  const techHit = raw.match(/(20\d{2})\D*(20\d{2})\D*([1234])/)
-  if (techHit) {
-    const academicStartYear = Number.parseInt(techHit[1], 10)
-    const term: AcademicTerm = techHit[3] === '2'
-      ? 'Spring'
-      : techHit[3] === '3'
-        ? 'Summer'
-        : techHit[3] === '4'
-          ? 'Winter'
-          : 'Fall'
-    return makeTermMeta(academicStartYear, term)
-  }
-
-  return null
-}
-
-const resolveCourseTerm = (course: UnifiedCourse): TermMeta => {
-  const candidates = [course.semesterLabel, course.courseName, course.semesterTechnion]
-  for (const item of candidates) {
-    const parsed = parseTermText(item || '')
-    if (parsed) return parsed
-  }
-  const fallback = (course.semesterLabel || course.semesterTechnion || 'Unknown term').trim() || 'Unknown term'
-  return {
-    key: `unknown:${fallback}`,
-    label: fallback,
-    sortScore: -1,
-  }
-}
 
 const moodleCourses = computed(() =>
   dashboard.value.courses.filter((course) => course.hasMoodle && course.moodleCourseId),
